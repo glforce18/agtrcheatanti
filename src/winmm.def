@@ -145,5 +145,5 @@ EXPORTS
     mmioDescend             @165
     mmioAscend              @166
     mmioCreateChunk         @167
-    mmioRename              @168
+    mmioRenameA             @168
     mmioSendMessage         @169
