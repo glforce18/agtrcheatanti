@@ -170,7 +170,7 @@ typedef MMRESULT (WINAPI *pfnMixerGetControlDetailsA)(HMIXEROBJ, LPMIXERCONTROLD
 typedef MMRESULT (WINAPI *pfnMixerGetControlDetailsW)(HMIXEROBJ, LPMIXERCONTROLDETAILS, DWORD);
 typedef MMRESULT (WINAPI *pfnMixerSetControlDetails)(HMIXEROBJ, LPMIXERCONTROLDETAILS, DWORD);
 typedef MMRESULT (WINAPI *pfnMixerGetID)(HMIXEROBJ, PUINT, DWORD);
-typedef MMRESULT (WINAPI *pfnMixerMessage)(HMIXER, UINT, DWORD_PTR, DWORD_PTR);
+typedef DWORD (WINAPI *pfnMixerMessage)(HMIXER, UINT, DWORD_PTR, DWORD_PTR);
 
 // MCI
 typedef MCIERROR (WINAPI *pfnMciSendCommandA)(MCIDEVICEID, UINT, DWORD_PTR, DWORD_PTR);
@@ -1079,7 +1079,7 @@ __declspec(dllexport) MMRESULT WINAPI mixerGetID(HMIXEROBJ hmxobj, PUINT puMxId,
     return o_MixerGetID(hmxobj, puMxId, fdwId);
 }
 
-__declspec(dllexport) MMRESULT WINAPI mixerMessage(HMIXER hmx, UINT uMsg, DWORD_PTR dwParam1, DWORD_PTR dwParam2) {
+__declspec(dllexport) DWORD WINAPI mixerMessage(HMIXER hmx, UINT uMsg, DWORD_PTR dwParam1, DWORD_PTR dwParam2) {
     if (!LoadOriginal() || !o_MixerMessage) return MMSYSERR_ERROR;
     return o_MixerMessage(hmx, uMsg, dwParam1, dwParam2);
 }
@@ -1250,7 +1250,7 @@ __declspec(dllexport) MMRESULT WINAPI mmioCreateChunk(HMMIO hmmio, LPMMCKINFO pm
     return o_MmioCreateChunk(hmmio, pmmcki, fuCreate);
 }
 
-__declspec(dllexport) MMRESULT WINAPI mmioRename(LPCSTR pszFileName, LPCSTR pszNewFileName, LPCMMIOINFO pmmioinfo, DWORD fdwRename) {
+__declspec(dllexport) MMRESULT WINAPI mmioRenameA(LPCSTR pszFileName, LPCSTR pszNewFileName, LPCMMIOINFO pmmioinfo, DWORD fdwRename) {
     if (!LoadOriginal() || !o_MmioRename) return MMSYSERR_ERROR;
     return o_MmioRename(pszFileName, pszNewFileName, pmmioinfo, fdwRename);
 }
