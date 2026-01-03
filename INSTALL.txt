@@ -1,0 +1,62 @@
+=====================================
+AGTR Anti-Cheat v11.5 - Kurulum
+=====================================
+
+ADIM 1: winmm.dll'i Half-Life klasörüne kopyala
+-----------------------------------------------
+
+Windows:
+  C:\Program Files (x86)\Steam\steamapps\common\Half-Life\winmm.dll
+
+Linux (Wine/Proton):
+  ~/.steam/steam/steamapps/common/Half-Life/winmm.dll
+
+
+ADIM 2: Oyunu başlat
+--------------------
+
+Half-Life'ı normal şekilde başlat.
+Anti-cheat otomatik olarak aktif olacak.
+
+
+ADIM 3: Kontrol et
+------------------
+
+Half-Life klasöründe "agtr_winmm.log" dosyası oluşacak.
+Bu dosyada şunları görmelisin:
+
+  [12:34:56.789] AGTR Anti-Cheat v11.5 (winmm.dll)
+  [12:34:56.790] HWID Generated: XXXXXXXX...
+  [12:34:56.791] Scan thread started
+
+Eğer bu satırları görüyorsan, kurulum başarılı!
+
+
+SORUN GİDERME
+-------------
+
+S: Oyun açılmıyor
+C: winmm.dll dosyasını sil, oyun normal açılacak.
+   Sonra DLL'i tekrar kopyala.
+
+S: Log dosyası oluşmuyor
+C: Half-Life klasörüne yazma izni var mı kontrol et.
+   Oyunu yönetici olarak çalıştırmayı dene.
+
+S: "DLL yüklenemedi" hatası
+C: 32-bit DLL olduğundan emin ol.
+   Antivirüs programını kontrol et.
+
+
+KALDIRMA
+--------
+
+winmm.dll dosyasını Half-Life klasöründen sil.
+Orijinal sistem DLL'i otomatik kullanılacak.
+
+
+DESTEK
+------
+
+Discord: [AGTR Discord sunucusu]
+GitHub: [Issues sayfası]

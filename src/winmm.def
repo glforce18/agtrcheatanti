@@ -1,0 +1,149 @@
+; winmm.dll export definitions
+; AGTR Anti-Cheat v11.5
+;
+; Half-Life uses these functions:
+; - timeGetTime (CRITICAL - every frame!)
+; - timeBeginPeriod, timeEndPeriod
+; - waveOut* functions
+; - mmioOpen, mmioRead, etc.
+
+LIBRARY winmm
+EXPORTS
+    ; Time functions (CRITICAL)
+    timeGetTime             @16
+    timeBeginPeriod         @17
+    timeEndPeriod           @18
+    timeGetDevCaps          @19
+    timeGetSystemTime       @20
+    timeSetEvent            @21
+    timeKillEvent           @22
+    
+    ; Wave Out
+    waveOutOpen             @30
+    waveOutClose            @31
+    waveOutWrite            @32
+    waveOutPrepareHeader    @33
+    waveOutUnprepareHeader  @34
+    waveOutReset            @35
+    waveOutPause            @36
+    waveOutRestart          @37
+    waveOutGetPosition      @38
+    waveOutGetDevCapsA      @39
+    waveOutGetDevCapsW      @40
+    waveOutGetNumDevs       @41
+    waveOutGetVolume        @42
+    waveOutSetVolume        @43
+    waveOutGetErrorTextA    @44
+    waveOutGetErrorTextW    @45
+    waveOutGetID            @46
+    waveOutMessage          @47
+    waveOutBreakLoop        @48
+    
+    ; Wave In
+    waveInOpen              @50
+    waveInClose             @51
+    waveInGetNumDevs        @52
+    waveInGetDevCapsA       @53
+    waveInGetDevCapsW       @54
+    waveInStart             @55
+    waveInStop              @56
+    waveInReset             @57
+    waveInPrepareHeader     @58
+    waveInUnprepareHeader   @59
+    waveInAddBuffer         @60
+    waveInGetPosition       @61
+    waveInGetID             @62
+    waveInGetErrorTextA     @63
+    waveInGetErrorTextW     @64
+    waveInMessage           @65
+    
+    ; PlaySound
+    PlaySoundA              @70
+    PlaySoundW              @71
+    sndPlaySoundA           @72
+    sndPlaySoundW           @73
+    
+    ; Joystick
+    joyGetNumDevs           @80
+    joyGetDevCapsA          @81
+    joyGetDevCapsW          @82
+    joyGetPos               @83
+    joyGetPosEx             @84
+    joyGetThreshold         @85
+    joySetThreshold         @86
+    joySetCapture           @87
+    joyReleaseCapture       @88
+    
+    ; MIDI Out
+    midiOutGetNumDevs       @90
+    midiOutGetDevCapsA      @91
+    midiOutGetDevCapsW      @92
+    midiOutOpen             @93
+    midiOutClose            @94
+    midiOutShortMsg         @95
+    midiOutLongMsg          @96
+    midiOutReset            @97
+    midiOutPrepareHeader    @98
+    midiOutUnprepareHeader  @99
+    
+    ; Aux
+    auxGetNumDevs           @100
+    auxGetDevCapsA          @101
+    auxGetDevCapsW          @102
+    auxGetVolume            @103
+    auxSetVolume            @104
+    auxOutMessage           @105
+    
+    ; Mixer
+    mixerGetNumDevs         @110
+    mixerOpen               @111
+    mixerClose              @112
+    mixerGetDevCapsA        @113
+    mixerGetDevCapsW        @114
+    mixerGetLineInfoA       @115
+    mixerGetLineInfoW       @116
+    mixerGetLineControlsA   @117
+    mixerGetLineControlsW   @118
+    mixerGetControlDetailsA @119
+    mixerGetControlDetailsW @120
+    mixerSetControlDetails  @121
+    mixerGetID              @122
+    mixerMessage            @123
+    
+    ; MCI
+    mciSendCommandA         @130
+    mciSendCommandW         @131
+    mciSendStringA          @132
+    mciSendStringW          @133
+    mciGetErrorStringA      @134
+    mciGetErrorStringW      @135
+    mciGetDeviceIDA         @136
+    mciGetDeviceIDW         @137
+    mciGetDeviceIDFromElementIDA  @138
+    mciGetDeviceIDFromElementIDW  @139
+    mciSetYieldProc         @140
+    mciGetYieldProc         @141
+    mciGetCreatorTask       @142
+    mciExecute              @143
+    
+    ; MMIO
+    mmioOpenA               @150
+    mmioOpenW               @151
+    mmioClose               @152
+    mmioRead                @153
+    mmioWrite               @154
+    mmioSeek                @155
+    mmioGetInfo             @156
+    mmioSetInfo             @157
+    mmioSetBuffer           @158
+    mmioFlush               @159
+    mmioAdvance             @160
+    mmioInstallIOProcA      @161
+    mmioInstallIOProcW      @162
+    mmioStringToFOURCCA     @163
+    mmioStringToFOURCCW     @164
+    mmioDescend             @165
+    mmioAscend              @166
+    mmioCreateChunk         @167
+    mmioRename              @168
+    mmioSendMessage         @169
