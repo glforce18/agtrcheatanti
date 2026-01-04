@@ -48,7 +48,7 @@ jobs:
         cl.exe /nologo /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
           src\agtr_dinput8.cpp ^
           /link /DEF:src\dinput8.def ^
-          winhttp.lib advapi32.lib user32.lib ole32.lib ^
+          winhttp.lib advapi32.lib user32.lib ^
           /OUT:dinput8.dll
         if exist dinput8.dll (
           echo [OK] dinput8.dll built successfully
@@ -65,7 +65,7 @@ jobs:
         cl.exe /nologo /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
           src\agtr_dsound.cpp ^
           /link /DEF:src\dsound.def ^
-          winhttp.lib advapi32.lib user32.lib ole32.lib ^
+          winhttp.lib advapi32.lib user32.lib ^
           /OUT:dsound.dll
         if exist dsound.dll (
           echo [OK] dsound.dll built successfully
