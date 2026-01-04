@@ -1,17 +1,13 @@
 /*
- * AGTR Anti-Cheat v12.1 - Performance Edition
+ * AGTR Anti-Cheat v12.4 - Security Hardened Edition
  * ============================================
  * 
- * 9 Performans Optimizasyonu:
- * #3  - Menu-Only Deep Scan (menüde tam tarama)
- * #7  - Delta Process Scan (sadece yeni process'ler)
- * #12 - Low Priority Thread (THREAD_PRIORITY_LOWEST)
- * #13 - Micro-Batch Operations (parça parça işlem)
- * #15 - Deferred Reporting (birikmiş sonuç gönderimi)
- * #19 - Smart Throttling (duruma göre yoğunluk)
- * #22 - Signature-First Check (hızlı imza kontrolü)
- * #26 - FPS Monitor (FPS düşükse bekle)
- * #28 - Game State Awareness (oyun durumuna göre)
+ * v12.4 Security Features:
+ * - HMAC-SHA256 Request Signing
+ * - DLL Self-Hash Verification
+ * - Anti-Debug Protection
+ * - HTTPS Support (optional)
+ * - Timestamp-based Replay Protection
  * 
  * BUILD (x86 Developer Command Prompt):
  * cl /O2 /MT /LD agtr_winmm.cpp /link /DEF:winmm.def /OUT:winmm.dll
@@ -34,6 +30,8 @@
 #include <tlhelp32.h>
 #include <psapi.h>
 #include <intrin.h>
+#include <wincrypt.h>
+#include <ctype.h>
 #include <string>
 #include <vector>
 #include <map>
@@ -44,11 +42,13 @@
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "crypt32.lib")
 
 // ============================================
 // VERSION & CONFIG
 // ============================================
-#define AGTR_VERSION "12.2"  // Security Edition - Encrypted Strings
+#define AGTR_VERSION "12.4"  // Security Hardened Edition
 #define AGTR_HASH_LENGTH 8
 
 // Adaptive Heartbeat intervals
@@ -65,6 +65,11 @@
 #define API_USE_HTTPS false
 #define API_TIMEOUT 5000               // 5sn timeout
 
+// Security Config (v12.4)
+#define SIGNATURE_ENABLED false  // Kapalı - sadece DLL hash kontrolü
+#define ANTI_DEBUG_ENABLED true
+#define DLL_HASH_ENABLED true
+
 // Encrypted strings (XOR with rotating key)
 // Key: 0xA7, 0x3F, 0x8C, 0x51, 0xD2, 0x6E, 0xB9, 0x04
 static const BYTE ENC_KEY[] = {0xA7, 0x3F, 0x8C, 0x51, 0xD2, 0x6E, 0xB9, 0x04};
@@ -77,6 +82,10 @@ static const BYTE ENC_API_HOST[] = {0x96, 0x07, 0xB9, 0x7F, 0xE3, 0x59, 0x88, 0x
 // "/api/v1/scan" encrypted  
 static const BYTE ENC_PATH_SCAN[] = {0x88, 0x5E, 0xFC, 0x38, 0xFD, 0x18, 0x88, 0x2B, 0xD4, 0x5C, 0xED, 0x3F};
 #define ENC_PATH_SCAN_LEN 12
+
+// "AGTR_sign_key!2025" - Signature key (encrypted)
+static const BYTE ENC_SIG_KEY[] = {0xE6, 0x78, 0xD8, 0x03, 0x8D, 0x1D, 0xD0, 0x63, 0xC9, 0x60, 0xE7, 0x34, 0xAB, 0x4F, 0x8B, 0x34, 0x95, 0x0A};
+#define ENC_SIG_KEY_LEN 18
 
 // "/api/v1/client/register" encrypted
 static const BYTE ENC_PATH_REGISTER[] = {0x88, 0x5E, 0xFC, 0x38, 0xFD, 0x18, 0x88, 0x2B, 0xC4, 0x53, 0xE5, 0x34, 0xBC, 0x1A, 0x96, 0x76, 0xC2, 0x58, 0xE5, 0x22, 0xA6, 0x0B, 0xCB};
@@ -126,7 +135,219 @@ static void EnsureStringsDecrypted() {
     DecryptStringW(ENC_PATH_HEARTBEAT, ENC_PATH_HEARTBEAT_LEN, g_szPathHeartbeat);
     DecryptStringW(ENC_PATH_CONNECT, ENC_PATH_CONNECT_LEN, g_szPathConnect);  // v12.2
     DecryptStringW(ENC_USER_AGENT, ENC_USER_AGENT_LEN, g_szUserAgent);
+    DecryptString(ENC_SIG_KEY, ENC_SIG_KEY_LEN, g_szSignatureKey);  // v12.4
     g_bStringsDecrypted = true;
+}
+
+// ============================================
+// v12.4 SECURITY FUNCTIONS
+// ============================================
+
+// SHA256 using Windows CryptoAPI
+static bool SHA256Hash(const BYTE* data, DWORD dataLen, char* outHex) {
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+    BYTE hash[32];
+    DWORD hashLen = 32;
+    bool success = false;
+    
+    if (CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
+        if (CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
+            if (CryptHashData(hHash, data, dataLen, 0)) {
+                if (CryptGetHashParam(hHash, HP_HASHVAL, hash, &hashLen, 0)) {
+                    for (DWORD i = 0; i < hashLen; i++) {
+                        sprintf(outHex + (i * 2), "%02x", hash[i]);
+                    }
+                    outHex[64] = 0;
+                    success = true;
+                }
+            }
+            CryptDestroyHash(hHash);
+        }
+        CryptReleaseContext(hProv, 0);
+    }
+    return success;
+}
+
+// HMAC-SHA256 for request signing
+static bool HMAC_SHA256(const char* key, const char* data, char* outHex) {
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+    HCRYPTKEY hKey = 0;
+    BYTE hash[32];
+    DWORD hashLen = 32;
+    bool success = false;
+    
+    // HMAC key structure
+    struct {
+        BLOBHEADER hdr;
+        DWORD keySize;
+        BYTE key[64];
+    } keyBlob;
+    
+    DWORD keyLen = (DWORD)strlen(key);
+    if (keyLen > 64) keyLen = 64;
+    
+    keyBlob.hdr.bType = PLAINTEXTKEYBLOB;
+    keyBlob.hdr.bVersion = CUR_BLOB_VERSION;
+    keyBlob.hdr.reserved = 0;
+    keyBlob.hdr.aiKeyAlg = CALG_RC2;
+    keyBlob.keySize = keyLen;
+    memcpy(keyBlob.key, key, keyLen);
+    
+    if (CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
+        HMAC_INFO hmacInfo = {0};
+        hmacInfo.HashAlgid = CALG_SHA_256;
+        
+        if (CryptCreateHash(hProv, CALG_HMAC, 0, 0, &hHash)) {
+            // Import key for HMAC
+            if (CryptImportKey(hProv, (BYTE*)&keyBlob, sizeof(keyBlob.hdr) + sizeof(DWORD) + keyLen, 0, CRYPT_IPSEC_HMAC_KEY, &hKey)) {
+                CryptDestroyHash(hHash);
+                if (CryptCreateHash(hProv, CALG_HMAC, hKey, 0, &hHash)) {
+                    if (CryptSetHashParam(hHash, HP_HMAC_INFO, (BYTE*)&hmacInfo, 0)) {
+                        if (CryptHashData(hHash, (BYTE*)data, (DWORD)strlen(data), 0)) {
+                            if (CryptGetHashParam(hHash, HP_HASHVAL, hash, &hashLen, 0)) {
+                                for (DWORD i = 0; i < hashLen; i++) {
+                                    sprintf(outHex + (i * 2), "%02x", hash[i]);
+                                }
+                                outHex[64] = 0;
+                                success = true;
+                            }
+                        }
+                    }
+                }
+                CryptDestroyKey(hKey);
+            }
+            CryptDestroyHash(hHash);
+        }
+        CryptReleaseContext(hProv, 0);
+    }
+    
+    // Fallback: Simple hash if HMAC fails
+    if (!success) {
+        // Basit XOR + SHA256 fallback
+        char combined[4096];
+        snprintf(combined, sizeof(combined), "%s:%s", key, data);
+        success = SHA256Hash((BYTE*)combined, (DWORD)strlen(combined), outHex);
+    }
+    
+    return success;
+}
+
+// Calculate DLL self hash and get filename
+static void CalculateSelfHash() {
+    char dllPath[MAX_PATH];
+    HMODULE hSelf = NULL;
+    
+    // Get our own module handle
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        (LPCSTR)CalculateSelfHash, &hSelf);
+    
+    if (GetModuleFileNameA(hSelf, dllPath, MAX_PATH)) {
+        // Extract filename from path
+        char* lastSlash = strrchr(dllPath, '\\');
+        if (lastSlash) {
+            strcpy(g_szSelfName, lastSlash + 1);
+        } else {
+            strcpy(g_szSelfName, dllPath);
+        }
+        // Convert to lowercase
+        for (char* p = g_szSelfName; *p; p++) {
+            *p = tolower(*p);
+        }
+        
+        HANDLE hFile = CreateFileA(dllPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD fileSize = GetFileSize(hFile, NULL);
+            if (fileSize > 0 && fileSize < 10 * 1024 * 1024) {  // Max 10MB
+                BYTE* fileData = (BYTE*)malloc(fileSize);
+                if (fileData) {
+                    DWORD bytesRead;
+                    if (ReadFile(hFile, fileData, fileSize, &bytesRead, NULL) && bytesRead == fileSize) {
+                        SHA256Hash(fileData, fileSize, g_szSelfHash);
+                    }
+                    free(fileData);
+                }
+            }
+            CloseHandle(hFile);
+        }
+    }
+    
+    if (g_szSelfHash[0] == 0) {
+        strcpy(g_szSelfHash, "unknown");
+    }
+    if (g_szSelfName[0] == 0) {
+        strcpy(g_szSelfName, "winmm.dll");  // Default
+    }
+}
+
+// Anti-debug checks
+static bool CheckDebugger() {
+    if (!ANTI_DEBUG_ENABLED) return false;
+    
+    // Check 1: IsDebuggerPresent
+    if (IsDebuggerPresent()) {
+        return true;
+    }
+    
+    // Check 2: CheckRemoteDebuggerPresent
+    BOOL remoteDebugger = FALSE;
+    if (CheckRemoteDebuggerPresent(GetCurrentProcess(), &remoteDebugger) && remoteDebugger) {
+        return true;
+    }
+    
+    // Check 3: PEB NtGlobalFlag
+    DWORD ntGlobalFlag = 0;
+    __try {
+        #ifdef _WIN64
+        ntGlobalFlag = *(DWORD*)((BYTE*)__readgsqword(0x60) + 0xBC);
+        #else
+        ntGlobalFlag = *(DWORD*)((BYTE*)__readfsdword(0x30) + 0x68);
+        #endif
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    
+    if (ntGlobalFlag & 0x70) {  // FLG_HEAP_ENABLE_TAIL_CHECK | FLG_HEAP_ENABLE_FREE_CHECK | FLG_HEAP_VALIDATE_PARAMETERS
+        return true;
+    }
+    
+    // Check 4: Timing check (debugger slows execution)
+    DWORD start = GetTickCount();
+    for (volatile int i = 0; i < 100000; i++) {}
+    DWORD elapsed = GetTickCount() - start;
+    if (elapsed > 500) {  // Normal < 50ms, debugger > 500ms (tolerant for slow PCs)
+        return true;
+    }
+    
+    // Check 5: Hardware breakpoints
+    CONTEXT ctx = {0};
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    if (GetThreadContext(GetCurrentThread(), &ctx)) {
+        if (ctx.Dr0 || ctx.Dr1 || ctx.Dr2 || ctx.Dr3) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// Generate timestamp for replay protection
+static DWORD64 GetTimestamp() {
+    return (DWORD64)time(NULL);
+}
+
+// Sign a request
+static void SignRequest(const char* jsonData, DWORD64 timestamp, char* outSignature) {
+    if (!SIGNATURE_ENABLED) {
+        outSignature[0] = 0;
+        return;
+    }
+    
+    EnsureStringsDecrypted();
+    
+    char dataToSign[8192];
+    snprintf(dataToSign, sizeof(dataToSign), "%llu:%s", timestamp, jsonData);
+    
+    HMAC_SHA256(g_szSignatureKey, dataToSign, outSignature);
 }
 
 // ============================================
@@ -212,6 +433,11 @@ static char g_szHWID[64] = {0};
 static char g_szDLLHash[64] = {0};
 static char g_szGameDir[MAX_PATH] = {0};
 static char g_szValveDir[MAX_PATH] = {0};
+
+// v12.4 Security
+static char g_szSelfHash[65] = {0};       // DLL'in kendi SHA256 hash'i
+static char g_szSelfName[64] = {0};       // DLL'in kendi dosya adı (winmm.dll, dinput8.dll, dsound.dll)
+static char g_szSignatureKey[64] = {0};   // Decrypted signature key
 static char g_szServerIP[64] = "unknown";
 static int g_iServerPort = 0;
 
@@ -226,7 +452,7 @@ static bool g_bVMDetected = false;
 static bool g_bHooksDetected = false;
 static bool g_bDriversDetected = false;
 static bool g_bIntegrityOK = true;
-static char g_szOwnHash[64] = {0};  // DLL'in kendi hash'i
+static char g_szOwnHash[64] = {0};  // DLL'in kendi hash'i (eski, deprecated)
 
 // ============================================
 // PERFORMANCE OPTIMIZATION SYSTEM (v12.1)
@@ -2103,10 +2329,20 @@ std::string EscapeJson(const std::string& s) {
 }
 
 std::string BuildJson() {
+    // v12.4 - Anti-debug check
+    if (ANTI_DEBUG_ENABLED) {
+        g_bDebuggerDetected = CheckDebugger();
+    }
+    
+    // v12.4 - Generate timestamp for replay protection
+    DWORD64 timestamp = GetTimestamp();
+    
     std::string json = "{";
     json += "\"hwid\":\"" + std::string(g_szHWID) + "\",";
     json += "\"version\":\"" + std::string(AGTR_VERSION) + "\",";
-    json += "\"dll_hash\":\"" + std::string(g_szDLLHash) + "\",";
+    json += "\"dll_name\":\"" + std::string(g_szSelfName) + "\",";  // v12.4 - DLL filename
+    json += "\"dll_hash\":\"" + std::string(g_szSelfHash) + "\",";  // v12.4 - Self hash
+    json += "\"timestamp\":" + std::to_string(timestamp) + ",";    // v12.4 - Replay protection
     json += "\"server_ip\":\"" + std::string(g_szServerIP) + "\",";
     json += "\"server_port\":" + std::to_string(g_iServerPort) + ",";
     json += "\"passed\":" + std::string(g_bPassed ? "true" : "false") + ",";
@@ -2181,6 +2417,15 @@ std::string BuildJson() {
     json += "\"drivers\":" + std::string(g_bDriversDetected ? "true" : "false") + ",";
     json += "\"integrity\":" + std::string(g_bIntegrityOK ? "true" : "false");
     json += "}";
+    
+    // v12.4 - Compute and add signature at the end
+    // First close the JSON without signature to compute hash
+    std::string jsonForSig = json + "}";
+    char signature[65] = {0};
+    SignRequest(jsonForSig.c_str(), timestamp, signature);
+    
+    // Now add signature to JSON
+    json += ",\"signature\":\"" + std::string(signature) + "\"";
     
     json += "}";
     return json;
@@ -3056,7 +3301,20 @@ void Init() {
     strcpy(g_szGameDir, path);
     sprintf(g_szValveDir, "%s\\valve", path);
     
-    Log("Init: %s", g_szGameDir);
+    // v12.4 - Security initialization
+    EnsureStringsDecrypted();
+    CalculateSelfHash();
+    
+    // v12.4 - Initial anti-debug check
+    if (ANTI_DEBUG_ENABLED) {
+        g_bDebuggerDetected = CheckDebugger();
+        if (g_bDebuggerDetected) {
+            Log("WARNING: Debugger detected!");
+        }
+    }
+    
+    Log("Init: %s (v%s)", g_szGameDir, AGTR_VERSION);
+    Log("Security: DLL=%s Hash=%s", g_szSelfName, g_szSelfHash);
 }
 
 void StartScanThread() {
