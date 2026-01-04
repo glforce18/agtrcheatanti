@@ -2353,7 +2353,9 @@ std::string BuildJson() {
         if (strstr(modPathLower, "half-life") || strstr(modPathLower, gamePathLower)) {
             if (!first) json += ",";
             json += "{\"name\":\"" + EscapeJson(m.name) + "\",";
-            json += "\"hash\":\"" + m.hash + "\"}";
+            json += "\"path\":\"" + EscapeJson(m.path) + "\",";
+            json += "\"hash\":\"" + m.hash + "\",";
+            json += "\"size\":" + std::to_string(m.size) + "}";
             first = false;
         }
     }
