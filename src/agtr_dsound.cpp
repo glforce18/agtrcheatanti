@@ -16,6 +16,9 @@ typedef void* LPUNKNOWN;
 #ifndef LPCGUID
 typedef const GUID* LPCGUID;
 #endif
+#ifndef LPGUID
+typedef GUID* LPGUID;
+#endif
 
 // Orijinal dsound.dll fonksiyonları
 typedef HRESULT (WINAPI *DirectSoundCreate_t)(LPCGUID, LPVOID*, LPUNKNOWN);
