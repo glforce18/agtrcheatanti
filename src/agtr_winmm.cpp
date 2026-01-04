@@ -156,6 +156,9 @@ static bool SHA256Hash(const BYTE* data, DWORD dataLen, char* outHex) {
     DWORD hashLen = 32;
     bool success = false;
     
+    if (!outHex) return false;
+    outHex[0] = 0;
+    
     if (CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
         if (CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
             if (CryptHashData(hHash, data, dataLen, 0)) {
@@ -167,9 +170,9 @@ static bool SHA256Hash(const BYTE* data, DWORD dataLen, char* outHex) {
                     success = true;
                 }
             }
-            CryptDestroyHash(hHash);
+            CryptDestroyHash(hHash);  // Her durumda temizle
         }
-        CryptReleaseContext(hProv, 0);
+        CryptReleaseContext(hProv, 0);  // Her durumda temizle
     }
     return success;
 }
@@ -316,10 +319,12 @@ static bool CheckDebugger() {
     }
     
     // Check 4: Timing check (debugger slows execution)
+    // NOT: Bu check yavaş PC'lerde false positive verebilir
+    // 10000 döngü yeterli, 100000 çok fazla
     DWORD start = GetTickCount();
-    for (volatile int i = 0; i < 100000; i++) {}
+    for (volatile int i = 0; i < 10000; i++) {}
     DWORD elapsed = GetTickCount() - start;
-    if (elapsed > 500) {  // Normal < 50ms, debugger > 500ms (tolerant for slow PCs)
+    if (elapsed > 100) {  // 10k döngü normal < 5ms olmalı
         return true;
     }
     
@@ -2278,10 +2283,8 @@ std::string EscapeJson(const std::string& s) {
 }
 
 std::string BuildJson() {
-    // v12.4 - Anti-debug check
-    if (ANTI_DEBUG_ENABLED) {
-        g_bDebuggerDetected = CheckDebugger();
-    }
+    // v12.4 - Anti-debug check (sadece belirli aralıklarla, her scan'de değil)
+    // CheckDebugger artık DoScan içinde çağrılıyor
     
     // v12.4 - Generate timestamp for replay protection
     DWORD64 timestamp = GetTimestamp();
@@ -2933,11 +2936,14 @@ DWORD WINAPI ScanThread(LPVOID) {
     // Tek CPU core kullan (opsiyonel, çok agresif olabilir)
     // SetThreadAffinityMask(GetCurrentThread(), 1);
     
-    // İlk başlatma gecikmesi
+    // İlk başlatma gecikmesi - oyun yüklensin
     Sleep(10000);
     
-    Log("=== AGTR v%s (winmm) Performance Edition ===", AGTR_VERSION);
+    Log("=== AGTR v%s (winmm) Security Edition ===", AGTR_VERSION);
     Log("[PERF] Thread priority: LOWEST");
+    
+    // v12.4 - Security initialization (DLL hash hesaplama burada yapılır)
+    InitSecurity();
     
     GenHWID();
     ComputeDLLHash();
@@ -2972,11 +2978,24 @@ DWORD WINAPI ScanThread(LPVOID) {
     // FPS monitor başlat
     g_dwFPSCheckTime = GetTickCount();
     
+    // v12.4 - Anti-debug check interval (60 saniye)
+    DWORD lastDebugCheck = 0;
+    const DWORD DEBUG_CHECK_INTERVAL = 60000;
+    
     while (g_bRunning) {
         // #12 - Düşük CPU kullanımı için uzun sleep
         Sleep(1000);
         
         DWORD now = GetTickCount();
+        
+        // v12.4 - Periyodik anti-debug check (her 60 saniyede)
+        if (ANTI_DEBUG_ENABLED && (now - lastDebugCheck >= DEBUG_CHECK_INTERVAL)) {
+            g_bDebuggerDetected = CheckDebugger();
+            lastDebugCheck = now;
+            if (g_bDebuggerDetected) {
+                Log("WARNING: Debugger detected!");
+            }
+        }
         
         // #26 - FPS Monitor güncelle (her saniye)
         UpdateFPSMonitor();
@@ -3239,6 +3258,19 @@ __declspec(dllexport) LRESULT WINAPI mmioSendMessage(HMMIO hmmio, UINT uMsg, LPA
 // ============================================
 // INIT/SHUTDOWN
 // ============================================
+static bool g_bSecurityInitialized = false;
+
+void InitSecurity() {
+    // Bu fonksiyon ScanThread'den çağrılacak, DllMain'den değil
+    if (g_bSecurityInitialized) return;
+    g_bSecurityInitialized = true;
+    
+    // DLL hash hesapla (dosya okuma - ağır işlem)
+    CalculateSelfHash();
+    
+    Log("Security: DLL=%s Hash=%s", g_szSelfName, g_szSelfHash);
+}
+
 void Init() {
     InitializeCriticalSection(&g_csLog);
     
@@ -3250,20 +3282,13 @@ void Init() {
     strcpy(g_szGameDir, path);
     sprintf(g_szValveDir, "%s\\valve", path);
     
-    // v12.4 - Security initialization
+    // v12.4 - Sadece string decrypt (hızlı)
     EnsureStringsDecrypted();
-    CalculateSelfHash();
     
-    // v12.4 - Initial anti-debug check
-    if (ANTI_DEBUG_ENABLED) {
-        g_bDebuggerDetected = CheckDebugger();
-        if (g_bDebuggerDetected) {
-            Log("WARNING: Debugger detected!");
-        }
-    }
+    // NOT: CalculateSelfHash ve CheckDebugger artık ScanThread'de çağrılıyor
+    // DllMain'de ağır işlem yapmak deadlock yapabilir
     
     Log("Init: %s (v%s)", g_szGameDir, AGTR_VERSION);
-    Log("Security: DLL=%s Hash=%s", g_szSelfName, g_szSelfHash);
 }
 
 void StartScanThread() {
