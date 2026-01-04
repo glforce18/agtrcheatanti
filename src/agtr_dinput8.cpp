@@ -7,8 +7,12 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <objbase.h>  // LPUNKNOWN için
 #include <stdio.h>
+
+// COM tipleri - sadece pointer olarak kullanılıyor
+#ifndef LPUNKNOWN
+typedef void* LPUNKNOWN;
+#endif
 
 // Orijinal dinput8.dll fonksiyonları
 typedef HRESULT (WINAPI *DirectInput8Create_t)(HINSTANCE, DWORD, REFIID, LPVOID*, LPUNKNOWN);
