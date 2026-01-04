@@ -232,6 +232,9 @@ static char g_szOwnHash[64] = {0};  // DLL'in kendi hash'i
 // PERFORMANCE OPTIMIZATION SYSTEM (v12.1)
 // ============================================
 
+// Forward declarations
+std::string HttpRequest(const wchar_t* path, const std::string& body, const std::string& method = "POST", bool canCache = false);
+
 // #7 Delta Process Scan - Önceki process listesi
 static std::map<DWORD, std::string> g_LastProcesses;
 static std::map<std::string, DWORD> g_LastModules;
@@ -1576,7 +1579,7 @@ void NotifyServerConnect() {
 // ============================================
 // HTTP HELPER (with timeout & graceful degradation)
 // ============================================
-std::string HttpRequest(const wchar_t* path, const std::string& body, const std::string& method = "POST", bool canCache = false) {
+std::string HttpRequest(const wchar_t* path, const std::string& body, const std::string& method, bool canCache) {
     std::string response;
     
     // Decrypt API strings on first use
