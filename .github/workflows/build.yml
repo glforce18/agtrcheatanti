@@ -1,7 +1,13 @@
-name: Build AGTR winmm.dll v12
+# AGTR Anti-Cheat - Multi-DLL Build
+# ==================================
+# winmm.dll, dinput8.dll ve dsound.dll derler
+
+name: Build All DLLs
 
 on:
   push:
+    branches: [ main, master ]
+  pull_request:
     branches: [ main, master ]
   workflow_dispatch:
 
@@ -13,18 +19,94 @@ jobs:
     - uses: actions/checkout@v4
     
     - name: Setup MSVC
-      uses: ilammy/msvc-dev-cmd@v1
-      with:
-        arch: x86
+      uses: microsoft/setup-msbuild@v1.1
     
-    - name: Build DLL
-      run: |
-        cl /nologo /O2 /MT /LD /W3 /EHsc /D "WIN32" /D "NDEBUG" /D "_WINDOWS" src/agtr_winmm.cpp /link /DEF:src/winmm.def /OUT:winmm.dll /MACHINE:X86 winmm.lib winhttp.lib ws2_32.lib iphlpapi.lib psapi.lib advapi32.lib user32.lib
+    - name: Setup Windows SDK
+      uses: fbactions/setup-winsdk@v1
+      with:
+        winsdk-build-version: 19041
+
+    # ============ winmm.dll ============
+    - name: Build winmm.dll
       shell: cmd
-      
-    - name: Upload artifact
+      run: |
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
+        cl.exe /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS ^
+          /I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\um" ^
+          /I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\shared" ^
+          src\agtr_winmm.cpp ^
+          /link /DEF:src\winmm.def ^
+          /LIBPATH:"C:\Program Files (x86)\Windows Kits\10\Lib\10.0.19041.0\um\x86" ^
+          winhttp.lib advapi32.lib user32.lib psapi.lib shell32.lib ^
+          /OUT:winmm.dll
+      continue-on-error: true
+
+    # ============ dinput8.dll ============
+    - name: Build dinput8.dll
+      shell: cmd
+      run: |
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
+        cl.exe /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS ^
+          /I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\um" ^
+          /I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\shared" ^
+          src\agtr_dinput8.cpp ^
+          /link /DEF:src\dinput8.def ^
+          /LIBPATH:"C:\Program Files (x86)\Windows Kits\10\Lib\10.0.19041.0\um\x86" ^
+          winhttp.lib advapi32.lib user32.lib ^
+          /OUT:dinput8.dll
+      continue-on-error: true
+
+    # ============ dsound.dll ============
+    - name: Build dsound.dll
+      shell: cmd
+      run: |
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
+        cl.exe /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS ^
+          /I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\um" ^
+          /I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\shared" ^
+          src\agtr_dsound.cpp ^
+          /link /DEF:src\dsound.def ^
+          /LIBPATH:"C:\Program Files (x86)\Windows Kits\10\Lib\10.0.19041.0\um\x86" ^
+          winhttp.lib advapi32.lib user32.lib ^
+          /OUT:dsound.dll
+      continue-on-error: true
+
+    - name: List built files
+      shell: cmd
+      run: |
+        echo === Built DLLs ===
+        dir *.dll
+        echo.
+        echo === File sizes ===
+        for %%f in (*.dll) do echo %%f: %%~zf bytes
+
+    - name: Upload winmm.dll
       uses: actions/upload-artifact@v4
       with:
-        name: AGTR-winmm-dll-v12
+        name: winmm-dll
         path: winmm.dll
-        retention-days: 90
+        if-no-files-found: warn
+
+    - name: Upload dinput8.dll
+      uses: actions/upload-artifact@v4
+      with:
+        name: dinput8-dll
+        path: dinput8.dll
+        if-no-files-found: warn
+
+    - name: Upload dsound.dll
+      uses: actions/upload-artifact@v4
+      with:
+        name: dsound-dll
+        path: dsound.dll
+        if-no-files-found: warn
+
+    - name: Upload All DLLs
+      uses: actions/upload-artifact@v4
+      with:
+        name: agtr-all-dlls
+        path: |
+          winmm.dll
+          dinput8.dll
+          dsound.dll
+        if-no-files-found: warn
