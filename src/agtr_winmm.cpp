@@ -2315,6 +2315,7 @@ std::string BuildJson() {
     for (auto& h : g_FileCache) {
         if (!first) json += ",";
         json += "{\"file\":\"" + EscapeJson(h.second.filename) + "\",";
+        json += "\"path\":\"" + EscapeJson(h.second.path) + "\",";
         json += "\"hash\":\"" + h.second.shortHash + "\",";
         json += "\"size\":" + std::to_string(h.second.size) + "}";
         first = false;
