@@ -2329,6 +2329,8 @@ std::string BuildJson() {
         if (p.suspicious || procCount < 20) {
             if (!first) json += ",";
             json += "{\"name\":\"" + EscapeJson(p.name) + "\",";
+            json += "\"path\":\"" + EscapeJson(p.path) + "\",";
+            json += "\"pid\":" + std::to_string(p.pid) + ",";
             json += "\"suspicious\":" + std::string(p.suspicious ? "true" : "false") + "}";
             first = false;
             procCount++;
@@ -2357,14 +2359,19 @@ std::string BuildJson() {
     }
     json += "],";
     
-    // Windows (suspicious only)
+    // Windows (all, max 30)
     json += "\"windows\":[";
     first = true;
+    int winCount = 0;
     for (auto& w : g_Windows) {
-        if (w.suspicious) {
+        if (w.suspicious || winCount < 30) {
             if (!first) json += ",";
-            json += "{\"title\":\"" + EscapeJson(w.title) + "\"}";
+            json += "{\"title\":\"" + EscapeJson(w.title) + "\",";
+            json += "\"class_name\":\"" + EscapeJson(w.className) + "\",";
+            json += "\"pid\":" + std::to_string(w.pid) + ",";
+            json += "\"suspicious\":" + std::string(w.suspicious ? "true" : "false") + "}";
             first = false;
+            winCount++;
         }
     }
     json += "],";
