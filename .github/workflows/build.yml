@@ -1,6 +1,5 @@
-# AGTR Anti-Cheat - Multi-DLL Build
-# ==================================
-# winmm.dll, dinput8.dll ve dsound.dll derler
+# AGTR Anti-Cheat - Multi-DLL Build v12.2
+# =========================================
 
 name: Build All DLLs
 
@@ -18,95 +17,105 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: Setup MSVC
-      uses: microsoft/setup-msbuild@v1.1
-    
-    - name: Setup Windows SDK
-      uses: fbactions/setup-winsdk@v1
+    - name: Setup MSVC Developer Command Prompt
+      uses: ilammy/msvc-dev-cmd@v1
       with:
-        winsdk-build-version: 19041
+        arch: x86
 
     # ============ winmm.dll ============
     - name: Build winmm.dll
       shell: cmd
       run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
-        cl.exe /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS ^
-          /I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\um" ^
-          /I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\shared" ^
+        echo Building winmm.dll...
+        cl.exe /nologo /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
           src\agtr_winmm.cpp ^
           /link /DEF:src\winmm.def ^
-          /LIBPATH:"C:\Program Files (x86)\Windows Kits\10\Lib\10.0.19041.0\um\x86" ^
-          winhttp.lib advapi32.lib user32.lib psapi.lib shell32.lib ^
+          winhttp.lib advapi32.lib user32.lib psapi.lib shell32.lib iphlpapi.lib ws2_32.lib ^
           /OUT:winmm.dll
-      continue-on-error: true
+        if exist winmm.dll (
+          echo [OK] winmm.dll built successfully
+          dir winmm.dll
+        ) else (
+          echo [FAIL] winmm.dll build failed
+          exit /b 1
+        )
 
     # ============ dinput8.dll ============
     - name: Build dinput8.dll
       shell: cmd
       run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
-        cl.exe /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS ^
-          /I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\um" ^
-          /I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\shared" ^
+        echo Building dinput8.dll...
+        cl.exe /nologo /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
           src\agtr_dinput8.cpp ^
           /link /DEF:src\dinput8.def ^
-          /LIBPATH:"C:\Program Files (x86)\Windows Kits\10\Lib\10.0.19041.0\um\x86" ^
           winhttp.lib advapi32.lib user32.lib ^
           /OUT:dinput8.dll
-      continue-on-error: true
+        if exist dinput8.dll (
+          echo [OK] dinput8.dll built successfully
+        ) else (
+          echo [FAIL] dinput8.dll build failed
+          exit /b 1
+        )
 
     # ============ dsound.dll ============
     - name: Build dsound.dll
       shell: cmd
       run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
-        cl.exe /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS ^
-          /I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\um" ^
-          /I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.19041.0\shared" ^
+        echo Building dsound.dll...
+        cl.exe /nologo /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS ^
           src\agtr_dsound.cpp ^
           /link /DEF:src\dsound.def ^
-          /LIBPATH:"C:\Program Files (x86)\Windows Kits\10\Lib\10.0.19041.0\um\x86" ^
           winhttp.lib advapi32.lib user32.lib ^
           /OUT:dsound.dll
-      continue-on-error: true
+        if exist dsound.dll (
+          echo [OK] dsound.dll built successfully
+        ) else (
+          echo [FAIL] dsound.dll build failed
+          exit /b 1
+        )
 
     - name: List built files
       shell: cmd
       run: |
-        echo === Built DLLs ===
-        dir *.dll
         echo.
-        echo === File sizes ===
-        for %%f in (*.dll) do echo %%f: %%~zf bytes
+        echo ========================================
+        echo            BUILD SUMMARY
+        echo ========================================
+        echo.
+        if exist winmm.dll (echo [OK] winmm.dll) else (echo [MISSING] winmm.dll)
+        if exist dinput8.dll (echo [OK] dinput8.dll) else (echo [MISSING] dinput8.dll)
+        if exist dsound.dll (echo [OK] dsound.dll) else (echo [MISSING] dsound.dll)
+        echo.
+        echo === File Details ===
+        dir *.dll 2>nul || echo No DLL files found
 
     - name: Upload winmm.dll
       uses: actions/upload-artifact@v4
       with:
         name: winmm-dll
         path: winmm.dll
-        if-no-files-found: warn
+        if-no-files-found: error
 
     - name: Upload dinput8.dll
       uses: actions/upload-artifact@v4
       with:
         name: dinput8-dll
         path: dinput8.dll
-        if-no-files-found: warn
+        if-no-files-found: error
 
     - name: Upload dsound.dll
       uses: actions/upload-artifact@v4
       with:
         name: dsound-dll
         path: dsound.dll
-        if-no-files-found: warn
+        if-no-files-found: error
 
-    - name: Upload All DLLs
+    - name: Upload All DLLs (Bundle)
       uses: actions/upload-artifact@v4
       with:
-        name: agtr-all-dlls
+        name: agtr-anticheat-v12.2
         path: |
           winmm.dll
           dinput8.dll
           dsound.dll
-        if-no-files-found: warn
+        if-no-files-found: error
