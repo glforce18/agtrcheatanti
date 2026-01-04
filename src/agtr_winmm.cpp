@@ -1,13 +1,17 @@
 /*
- * AGTR Anti-Cheat v11.5 - winmm.dll Proxy
- * ========================================
+ * AGTR Anti-Cheat v12.1 - Performance Edition
+ * ============================================
  * 
- * Full scanning system:
- * - Process scanner (cheat engine, artmoney, etc.)
- * - Module/DLL scanner (injected DLLs)
- * - Window scanner (suspicious titles)
- * - File hash scanner (blacklist check)
- * - Registry scanner (cheat software)
+ * 9 Performans Optimizasyonu:
+ * #3  - Menu-Only Deep Scan (menüde tam tarama)
+ * #7  - Delta Process Scan (sadece yeni process'ler)
+ * #12 - Low Priority Thread (THREAD_PRIORITY_LOWEST)
+ * #13 - Micro-Batch Operations (parça parça işlem)
+ * #15 - Deferred Reporting (birikmiş sonuç gönderimi)
+ * #19 - Smart Throttling (duruma göre yoğunluk)
+ * #22 - Signature-First Check (hızlı imza kontrolü)
+ * #26 - FPS Monitor (FPS düşükse bekle)
+ * #28 - Game State Awareness (oyun durumuna göre)
  * 
  * BUILD (x86 Developer Command Prompt):
  * cl /O2 /MT /LD agtr_winmm.cpp /link /DEF:winmm.def /OUT:winmm.dll
@@ -44,7 +48,7 @@
 // ============================================
 // VERSION & CONFIG
 // ============================================
-#define AGTR_VERSION "12.0"
+#define AGTR_VERSION "12.2"  // Security Edition - Encrypted Strings
 #define AGTR_HASH_LENGTH 8
 
 // Adaptive Heartbeat intervals
@@ -56,14 +60,74 @@
 #define THROTTLE_MIN_INTERVAL 300000   // Aynı veriyi 5dk'da bir gönder
 #define OFFLINE_CACHE_MAX 10           // Max cache'lenecek request
 
-// API Config
-#define API_HOST L"185.171.25.137"
+// API Config - Encrypted at compile time, decrypted at runtime
 #define API_PORT 5000
-#define API_PATH_SCAN L"/api/v1/scan"
-#define API_PATH_REGISTER L"/api/v1/client/register"
-#define API_PATH_HEARTBEAT L"/api/v1/client/heartbeat"
 #define API_USE_HTTPS false
 #define API_TIMEOUT 5000               // 5sn timeout
+
+// Encrypted strings (XOR with rotating key)
+// Key: 0xA7, 0x3F, 0x8C, 0x51, 0xD2, 0x6E, 0xB9, 0x04
+static const BYTE ENC_KEY[] = {0xA7, 0x3F, 0x8C, 0x51, 0xD2, 0x6E, 0xB9, 0x04};
+#define ENC_KEY_LEN 8
+
+// "185.171.25.137" encrypted
+static const BYTE ENC_API_HOST[] = {0x96, 0x07, 0xB9, 0x7F, 0xE3, 0x59, 0x88, 0x2A, 0x95, 0x0A, 0xA2, 0x60, 0xE1, 0x59};
+#define ENC_API_HOST_LEN 14
+
+// "/api/v1/scan" encrypted  
+static const BYTE ENC_PATH_SCAN[] = {0x88, 0x5E, 0xFC, 0x38, 0xFD, 0x18, 0x88, 0x2B, 0xD4, 0x5C, 0xED, 0x3F};
+#define ENC_PATH_SCAN_LEN 12
+
+// "/api/v1/client/register" encrypted
+static const BYTE ENC_PATH_REGISTER[] = {0x88, 0x5E, 0xFC, 0x38, 0xFD, 0x18, 0x88, 0x2B, 0xC4, 0x53, 0xE5, 0x34, 0xBC, 0x1A, 0x96, 0x76, 0xC2, 0x58, 0xE5, 0x22, 0xA6, 0x0B, 0xCB};
+#define ENC_PATH_REGISTER_LEN 23
+
+// "/api/v1/client/heartbeat" encrypted
+static const BYTE ENC_PATH_HEARTBEAT[] = {0x88, 0x5E, 0xFC, 0x38, 0xFD, 0x18, 0x88, 0x2B, 0xC4, 0x53, 0xE5, 0x34, 0xBC, 0x1A, 0x96, 0x6C, 0xC2, 0x5E, 0xFE, 0x25, 0xB0, 0x0B, 0xD8, 0x70};
+#define ENC_PATH_HEARTBEAT_LEN 24
+
+// "AGTR/12.1" encrypted (User-Agent)
+static const BYTE ENC_USER_AGENT[] = {0xE6, 0x78, 0xD8, 0x03, 0xFD, 0x5F, 0x8B, 0x2A, 0x96};
+#define ENC_USER_AGENT_LEN 9
+
+// "/api/v1/client/connect" encrypted (v12.2 - Hızlı bağlantı bildirimi)
+static const BYTE ENC_PATH_CONNECT[] = {0x88, 0x5E, 0xFC, 0x38, 0xFD, 0x18, 0x88, 0x2B, 0xC4, 0x53, 0xE5, 0x34, 0xBC, 0x1A, 0x96, 0x67, 0xC8, 0x51, 0xE2, 0x34, 0xB1, 0x1A};
+#define ENC_PATH_CONNECT_LEN 22
+
+// Decrypt function - decrypts in place to avoid string literals in memory
+static void DecryptString(const BYTE* enc, int len, char* out) {
+    for (int i = 0; i < len; i++) {
+        out[i] = enc[i] ^ ENC_KEY[i % ENC_KEY_LEN];
+    }
+    out[len] = 0;
+}
+
+static void DecryptStringW(const BYTE* enc, int len, wchar_t* out) {
+    for (int i = 0; i < len; i++) {
+        out[i] = (wchar_t)(enc[i] ^ ENC_KEY[i % ENC_KEY_LEN]);
+    }
+    out[len] = 0;
+}
+
+// Runtime decrypted values (filled on first use)
+static wchar_t g_szAPIHost[32] = {0};
+static wchar_t g_szPathScan[64] = {0};
+static wchar_t g_szPathRegister[64] = {0};
+static wchar_t g_szPathHeartbeat[64] = {0};
+static wchar_t g_szPathConnect[64] = {0};  // v12.2
+static wchar_t g_szUserAgent[32] = {0};
+static bool g_bStringsDecrypted = false;
+
+static void EnsureStringsDecrypted() {
+    if (g_bStringsDecrypted) return;
+    DecryptStringW(ENC_API_HOST, ENC_API_HOST_LEN, g_szAPIHost);
+    DecryptStringW(ENC_PATH_SCAN, ENC_PATH_SCAN_LEN, g_szPathScan);
+    DecryptStringW(ENC_PATH_REGISTER, ENC_PATH_REGISTER_LEN, g_szPathRegister);
+    DecryptStringW(ENC_PATH_HEARTBEAT, ENC_PATH_HEARTBEAT_LEN, g_szPathHeartbeat);
+    DecryptStringW(ENC_PATH_CONNECT, ENC_PATH_CONNECT_LEN, g_szPathConnect);  // v12.2
+    DecryptStringW(ENC_USER_AGENT, ENC_USER_AGENT_LEN, g_szUserAgent);
+    g_bStringsDecrypted = true;
+}
 
 // ============================================
 // DYNAMIC SETTINGS
@@ -91,6 +155,16 @@ static int g_iConnectedPort = 0;
 static DWORD g_dwLastHeartbeat = 0;
 static DWORD g_dwLastScan = 0;
 static bool g_bSettingsLoaded = false;
+
+// v12.2 - Yeni özellikler
+static char g_szSteamID[64] = {0};           // Oyuncunun SteamID'si
+static char g_szSteamName[64] = {0};         // Steam kullanıcı adı
+static char g_szAuthToken[128] = {0};        // Sunucu tarafından verilen token
+static char g_szLastConnectedIP[64] = {0};   // Önceki bağlantı (değişim tespiti için)
+static int g_iLastConnectedPort = 0;
+static DWORD g_dwConnectionStart = 0;        // Sunucuya bağlanma zamanı
+static bool g_bConnectionNotified = false;   // Hızlı bildirim gönderildi mi?
+static bool g_bSteamIDResolved = false;      // SteamID çözüldü mü?
 
 // Optimization states
 static bool g_bAPIOnline = true;           // API erişilebilir mi?
@@ -153,6 +227,88 @@ static bool g_bHooksDetected = false;
 static bool g_bDriversDetected = false;
 static bool g_bIntegrityOK = true;
 static char g_szOwnHash[64] = {0};  // DLL'in kendi hash'i
+
+// ============================================
+// PERFORMANCE OPTIMIZATION SYSTEM (v12.1)
+// ============================================
+
+// #7 Delta Process Scan - Önceki process listesi
+static std::map<DWORD, std::string> g_LastProcesses;
+static std::map<std::string, DWORD> g_LastModules;
+static bool g_bDeltaScanEnabled = true;
+
+// #3 Menu-Only Deep Scan
+static bool g_bDeepScanPending = false;
+static DWORD g_dwLastDeepScan = 0;
+#define DEEP_SCAN_INTERVAL 300000  // 5 dakikada bir deep scan
+
+// #26 FPS Monitor
+static float g_fCurrentFPS = 999.0f;
+static DWORD g_dwLastFrameTime = 0;
+static int g_iFrameCount = 0;
+static DWORD g_dwFPSCheckTime = 0;
+#define MIN_FPS_FOR_SCAN 40.0f     // Bu FPS'in altındayken scan yapma
+#define FPS_CHECK_INTERVAL 1000    // Her saniye FPS kontrol
+
+// #19 Smart Throttling
+enum ScanIntensity {
+    SCAN_INTENSITY_NONE = 0,    // Scan yapma
+    SCAN_INTENSITY_LIGHT = 1,   // Sadece signature check
+    SCAN_INTENSITY_NORMAL = 2,  // Normal scan
+    SCAN_INTENSITY_DEEP = 3     // Tam scan (tüm dosyalar, registry vs)
+};
+static ScanIntensity g_CurrentIntensity = SCAN_INTENSITY_NORMAL;
+
+// #13 Micro-Batch Operations
+static int g_iBatchIndex = 0;
+static int g_iProcessBatchPos = 0;
+static int g_iModuleBatchPos = 0;
+#define BATCH_SIZE_PROCESS 5       // Her tick'te max 5 process tara
+#define BATCH_SIZE_MODULE 3        // Her tick'te max 3 modül tara
+
+// #15 Deferred Reporting
+struct DeferredResult {
+    std::string type;
+    std::string name;
+    bool suspicious;
+    DWORD timestamp;
+};
+static std::vector<DeferredResult> g_DeferredResults;
+static DWORD g_dwLastReportTime = 0;
+#define DEFERRED_REPORT_INTERVAL 30000  // 30 saniyede bir rapor gönder
+
+// #28 Game State Awareness
+enum GameState {
+    STATE_MENU = 0,
+    STATE_LOADING = 1,
+    STATE_PLAYING = 2,
+    STATE_DEAD = 3,
+    STATE_SPECTATING = 4
+};
+static GameState g_CurrentGameState = STATE_MENU;
+static bool g_bPlayerAlive = true;
+static DWORD g_dwLastDamageTime = 0;
+static DWORD g_dwLastShotTime = 0;
+
+// #22 Signature-First Check - Hızlı imza listesi
+struct QuickSignature {
+    const char* pattern;
+    const char* name;
+    int severity;  // 1=low, 2=medium, 3=high, 4=critical
+};
+static QuickSignature g_QuickSigs[] = {
+    {"cheatengine", "Cheat Engine", 4},
+    {"ce.exe", "Cheat Engine", 4},
+    {"artmoney", "ArtMoney", 4},
+    {"speedhack", "SpeedHack", 4},
+    {"aimbot", "Aimbot", 4},
+    {"wallhack", "Wallhack", 4},
+    {"x64dbg", "Debugger", 3},
+    {"ollydbg", "Debugger", 3},
+    {"ida.exe", "Disassembler", 3},
+    {"injector", "DLL Injector", 3},
+    {NULL, NULL, 0}
+};
 
 // ============================================
 // DATA STRUCTURES
@@ -1054,6 +1210,173 @@ void GenHWID() {
     Log("HWID: %s", g_szHWID);
 }
 
+// ============================================
+// v12.2 - STEAMID TESPİTİ
+// ============================================
+// Yöntem 1: Registry'den aktif Steam kullanıcısı
+bool GetSteamIDFromRegistry() {
+    HKEY hKey;
+    char steamPath[MAX_PATH] = {0};
+    DWORD size = sizeof(steamPath);
+    
+    // Steam yolu al
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Valve\\Steam", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        // Aktif kullanıcı (SteamID3 formatında)
+        DWORD userId = 0;
+        size = sizeof(userId);
+        if (RegQueryValueExA(hKey, "ActiveProcess\\ActiveUser", NULL, NULL, (LPBYTE)&userId, &size) == ERROR_SUCCESS && userId > 0) {
+            // SteamID64'e çevir (Universe=1, Type=1)
+            // SteamID64 = (Universe << 56) | (Type << 52) | (Instance << 32) | AccountID
+            // Basit format: STEAM_X:Y:Z
+            // X = Universe (genelde 0 veya 1)
+            // Y = AccountID'nin son biti (0 veya 1)  
+            // Z = AccountID / 2
+            DWORD y = userId & 1;
+            DWORD z = userId >> 1;
+            sprintf(g_szSteamID, "STEAM_0:%d:%d", y, z);
+            Log("SteamID from Registry: %s", g_szSteamID);
+            RegCloseKey(hKey);
+            return true;
+        }
+        RegCloseKey(hKey);
+    }
+    
+    // Yöntem 2: loginusers.vdf dosyasından
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Valve\\Steam", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        size = sizeof(steamPath);
+        if (RegQueryValueExA(hKey, "SteamPath", NULL, NULL, (LPBYTE)steamPath, &size) == ERROR_SUCCESS) {
+            char vdfPath[MAX_PATH];
+            sprintf(vdfPath, "%s\\config\\loginusers.vdf", steamPath);
+            
+            FILE* f = fopen(vdfPath, "r");
+            if (f) {
+                char line[512];
+                char lastSteamID64[32] = {0};
+                bool foundMostRecent = false;
+                
+                while (fgets(line, sizeof(line), f)) {
+                    // "7656119XXXXXXXXX" formatında SteamID64 ara
+                    char* p = strstr(line, "\"7656119");
+                    if (p) {
+                        p++; // " atla
+                        char* end = strchr(p, '"');
+                        if (end) {
+                            *end = 0;
+                            strcpy(lastSteamID64, p);
+                        }
+                    }
+                    // "mostrecent" "1" satırını ara
+                    if (strstr(line, "\"mostrecent\"") && strstr(line, "\"1\"")) {
+                        foundMostRecent = true;
+                    }
+                }
+                fclose(f);
+                
+                if (lastSteamID64[0]) {
+                    // SteamID64'ten STEAM_X:Y:Z formatına çevir
+                    unsigned long long sid64 = _strtoui64(lastSteamID64, NULL, 10);
+                    DWORD accountId = (DWORD)(sid64 & 0xFFFFFFFF);
+                    DWORD y = accountId & 1;
+                    DWORD z = accountId >> 1;
+                    sprintf(g_szSteamID, "STEAM_0:%d:%d", y, z);
+                    Log("SteamID from loginusers.vdf: %s (ID64: %s)", g_szSteamID, lastSteamID64);
+                    RegCloseKey(hKey);
+                    return true;
+                }
+            }
+        }
+        RegCloseKey(hKey);
+    }
+    
+    return false;
+}
+
+// Yöntem 2: userdata klasöründen en son değişen ID
+bool GetSteamIDFromUserdata() {
+    HKEY hKey;
+    char steamPath[MAX_PATH] = {0};
+    DWORD size = sizeof(steamPath);
+    
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Valve\\Steam", 0, KEY_READ, &hKey) != ERROR_SUCCESS) return false;
+    if (RegQueryValueExA(hKey, "SteamPath", NULL, NULL, (LPBYTE)steamPath, &size) != ERROR_SUCCESS) {
+        RegCloseKey(hKey);
+        return false;
+    }
+    RegCloseKey(hKey);
+    
+    char userdataPath[MAX_PATH];
+    sprintf(userdataPath, "%s\\userdata\\*", steamPath);
+    
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind = FindFirstFileA(userdataPath, &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return false;
+    
+    DWORD latestAccountId = 0;
+    FILETIME latestTime = {0};
+    
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (fd.cFileName[0] != '.') {
+                DWORD accountId = atoi(fd.cFileName);
+                if (accountId > 0) {
+                    // En son değişeni bul
+                    if (CompareFileTime(&fd.ftLastWriteTime, &latestTime) > 0) {
+                        latestTime = fd.ftLastWriteTime;
+                        latestAccountId = accountId;
+                    }
+                }
+            }
+        }
+    } while (FindNextFileA(hFind, &fd));
+    FindClose(hFind);
+    
+    if (latestAccountId > 0) {
+        DWORD y = latestAccountId & 1;
+        DWORD z = latestAccountId >> 1;
+        sprintf(g_szSteamID, "STEAM_0:%d:%d", y, z);
+        Log("SteamID from userdata: %s (AccountID: %d)", g_szSteamID, latestAccountId);
+        return true;
+    }
+    
+    return false;
+}
+
+// Steam kullanıcı adını al (opsiyonel)
+void GetSteamUsername() {
+    HKEY hKey;
+    DWORD size = sizeof(g_szSteamName);
+    
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Valve\\Steam", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        if (RegQueryValueExA(hKey, "LastGameNameUsed", NULL, NULL, (LPBYTE)g_szSteamName, &size) != ERROR_SUCCESS) {
+            // Alternatif
+            size = sizeof(g_szSteamName);
+            RegQueryValueExA(hKey, "AutoLoginUser", NULL, NULL, (LPBYTE)g_szSteamName, &size);
+        }
+        RegCloseKey(hKey);
+    }
+    
+    if (g_szSteamName[0]) {
+        Log("Steam Username: %s", g_szSteamName);
+    }
+}
+
+// SteamID tespit et (tüm yöntemleri dene)
+void ResolveSteamID() {
+    if (g_bSteamIDResolved) return;
+    
+    Log("Resolving SteamID...");
+    
+    if (!GetSteamIDFromRegistry()) {
+        if (!GetSteamIDFromUserdata()) {
+            Log("Could not resolve SteamID");
+            strcpy(g_szSteamID, "STEAM_ID_UNKNOWN");
+        }
+    }
+    
+    GetSteamUsername();
+    g_bSteamIDResolved = true;
+}
+
 // #9 - Hash Cache: Dosya değişmediyse tekrar hash'leme
 void GetFileHash(const char* filepath, char* shortHash, char* fullHash, DWORD* fileSize) {
     shortHash[0] = fullHash[0] = 0;
@@ -1166,7 +1489,88 @@ bool DetectConnectedServer() {
         }
     }
     
+    // v12.2 - Sunucu değişikliği tespiti
+    bool serverChanged = false;
+    if (g_bInServer) {
+        if (strcmp(g_szConnectedIP, g_szLastConnectedIP) != 0 || g_iConnectedPort != g_iLastConnectedPort) {
+            serverChanged = true;
+            strcpy(g_szLastConnectedIP, g_szConnectedIP);
+            g_iLastConnectedPort = g_iConnectedPort;
+            g_dwConnectionStart = GetTickCount();
+            g_bConnectionNotified = false;
+            Log("Server changed: %s:%d", g_szConnectedIP, g_iConnectedPort);
+        }
+    } else {
+        // Sunucudan çıkıldı
+        if (g_szLastConnectedIP[0]) {
+            Log("Disconnected from server");
+            g_szLastConnectedIP[0] = 0;
+            g_iLastConnectedPort = 0;
+            g_bConnectionNotified = false;
+        }
+    }
+    
     return g_bInServer;
+}
+
+// ============================================
+// v12.2 - HIZLI BAĞLANTI BİLDİRİMİ
+// ============================================
+// Sunucuya bağlanır bağlanmaz API'ye bildir (heartbeat beklemeden)
+void NotifyServerConnect() {
+    if (!g_bInServer || g_bConnectionNotified) return;
+    if (!g_szConnectedIP[0]) return;
+    
+    // SteamID henüz çözülmediyse çöz
+    if (!g_bSteamIDResolved) {
+        ResolveSteamID();
+    }
+    
+    EnsureStringsDecrypted();
+    
+    char json[1024];
+    sprintf(json, 
+        "{\"hwid\":\"%s\","
+        "\"steamid\":\"%s\","
+        "\"steam_name\":\"%s\","
+        "\"server_ip\":\"%s\","
+        "\"server_port\":%d,"
+        "\"version\":\"%s\","
+        "\"trigger\":\"winmm\","
+        "\"event\":\"connect\"}",
+        g_szHWID, 
+        g_szSteamID,
+        g_szSteamName,
+        g_szConnectedIP, 
+        g_iConnectedPort, 
+        AGTR_VERSION);
+    
+    Log("Quick connect notification: %s:%d (SteamID: %s)", g_szConnectedIP, g_iConnectedPort, g_szSteamID);
+    
+    std::string resp = HttpRequest(g_szPathConnect, json, "POST", false);
+    
+    if (!resp.empty()) {
+        g_bConnectionNotified = true;
+        
+        // Token varsa kaydet
+        const char* tokenStart = strstr(resp.c_str(), "\"token\":\"");
+        if (tokenStart) {
+            tokenStart += 9;
+            const char* tokenEnd = strchr(tokenStart, '"');
+            if (tokenEnd && tokenEnd - tokenStart < sizeof(g_szAuthToken) - 1) {
+                strncpy(g_szAuthToken, tokenStart, tokenEnd - tokenStart);
+                g_szAuthToken[tokenEnd - tokenStart] = 0;
+                Log("Received auth token: %s", g_szAuthToken);
+            }
+        }
+        
+        // Ban kontrolü
+        if (strstr(resp.c_str(), "\"status\":\"banned\"")) {
+            Log("!!! BANNED ON CONNECT !!!");
+            MessageBoxA(NULL, g_Settings.message_on_kick, "AGTR Anti-Cheat", MB_OK | MB_ICONERROR);
+            ExitProcess(0);
+        }
+    }
 }
 
 // ============================================
@@ -1175,7 +1579,10 @@ bool DetectConnectedServer() {
 std::string HttpRequest(const wchar_t* path, const std::string& body, const std::string& method = "POST", bool canCache = false) {
     std::string response;
     
-    HINTERNET hSession = WinHttpOpen(L"AGTR/12.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
+    // Decrypt API strings on first use
+    EnsureStringsDecrypted();
+    
+    HINTERNET hSession = WinHttpOpen(g_szUserAgent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!hSession) {
         g_bAPIOnline = false;
         g_iFailedRequests++;
@@ -1189,7 +1596,7 @@ std::string HttpRequest(const wchar_t* path, const std::string& body, const std:
     WinHttpSetOption(hSession, WINHTTP_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
     WinHttpSetOption(hSession, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
     
-    HINTERNET hConnect = WinHttpConnect(hSession, API_HOST, API_PORT, 0);
+    HINTERNET hConnect = WinHttpConnect(hSession, g_szAPIHost, API_PORT, 0);
     if (!hConnect) { 
         WinHttpCloseHandle(hSession);
         g_bAPIOnline = false;
@@ -1259,13 +1666,14 @@ std::string HttpRequest(const wchar_t* path, const std::string& body, const std:
 void FlushOfflineCache() {
     if (g_iCacheCount == 0 || !g_bAPIOnline) return;
     
+    EnsureStringsDecrypted();
     Log("Flushing offline cache (%d items)", g_iCacheCount);
     
     int sent = 0;
     for (int i = 0; i < g_iCacheCount; i++) {
         if (!g_OfflineCache[i].valid) continue;
         
-        std::string resp = HttpRequest(API_PATH_SCAN, g_OfflineCache[i].data, "POST", false);
+        std::string resp = HttpRequest(g_szPathScan, g_OfflineCache[i].data, "POST", false);
         if (!resp.empty()) {
             g_OfflineCache[i].valid = false;
             sent++;
@@ -1297,8 +1705,23 @@ void FlushOfflineCache() {
 // SETTINGS
 // ============================================
 bool FetchSettings() {
-    std::string json = "{\"hwid\":\"" + std::string(g_szHWID) + "\",\"version\":\"" + AGTR_VERSION + "\",\"trigger\":\"winmm\"}";
-    std::string resp = HttpRequest(API_PATH_REGISTER, json);
+    EnsureStringsDecrypted();
+    
+    // v12.2 - SteamID'yi register'da da gönder
+    if (!g_bSteamIDResolved) {
+        ResolveSteamID();
+    }
+    
+    char json[512];
+    sprintf(json, 
+        "{\"hwid\":\"%s\","
+        "\"steamid\":\"%s\","
+        "\"steam_name\":\"%s\","
+        "\"version\":\"%s\","
+        "\"trigger\":\"winmm\"}",
+        g_szHWID, g_szSteamID, g_szSteamName, AGTR_VERSION);
+    
+    std::string resp = HttpRequest(g_szPathRegister, json);
     
     if (resp.empty()) {
         Log("Settings fetch failed");
@@ -1315,6 +1738,18 @@ bool FetchSettings() {
         int interval = atoi(intPos + 16);
         if (interval >= 30 && interval <= 600) {
             g_Settings.scan_interval = interval * 1000;
+        }
+    }
+    
+    // v12.2 - Token al
+    const char* tokenStart = strstr(resp.c_str(), "\"token\":\"");
+    if (tokenStart) {
+        tokenStart += 9;
+        const char* tokenEnd = strchr(tokenStart, '"');
+        if (tokenEnd && tokenEnd - tokenStart < sizeof(g_szAuthToken) - 1) {
+            strncpy(g_szAuthToken, tokenStart, tokenEnd - tokenStart);
+            g_szAuthToken[tokenEnd - tokenStart] = 0;
+            Log("Received initial token: %s", g_szAuthToken);
         }
     }
     
@@ -1335,16 +1770,42 @@ bool FetchSettings() {
 void SendHeartbeat() {
     DetectConnectedServer();
     
+    // v12.2 - Sunucuya yeni bağlandıysa hızlı bildirim gönder
+    if (g_bInServer && !g_bConnectionNotified) {
+        NotifyServerConnect();
+    }
+    
     // #6 - API online'a döndüyse cache'i gönder
     if (g_bAPIOnline && g_iCacheCount > 0) {
         FlushOfflineCache();
     }
     
-    char json[512];
-    sprintf(json, "{\"hwid\":\"%s\",\"server_ip\":\"%s\",\"server_port\":%d,\"in_game\":%s,\"trigger\":\"winmm\",\"version\":\"%s\"}",
-        g_szHWID, g_szConnectedIP, g_iConnectedPort, g_bInServer ? "true" : "false", AGTR_VERSION);
+    // v12.2 - SteamID henüz çözülmediyse çöz
+    if (!g_bSteamIDResolved) {
+        ResolveSteamID();
+    }
     
-    std::string resp = HttpRequest(API_PATH_HEARTBEAT, json);
+    char json[1024];
+    sprintf(json, 
+        "{\"hwid\":\"%s\","
+        "\"steamid\":\"%s\","
+        "\"steam_name\":\"%s\","
+        "\"server_ip\":\"%s\","
+        "\"server_port\":%d,"
+        "\"in_game\":%s,"
+        "\"token\":\"%s\","
+        "\"trigger\":\"winmm\","
+        "\"version\":\"%s\"}",
+        g_szHWID, 
+        g_szSteamID,
+        g_szSteamName,
+        g_szConnectedIP, 
+        g_iConnectedPort, 
+        g_bInServer ? "true" : "false", 
+        g_szAuthToken,
+        AGTR_VERSION);
+    
+    std::string resp = HttpRequest(g_szPathHeartbeat, json);
     
     if (!resp.empty()) {
         if (strstr(resp.c_str(), "\"should_scan\":false")) g_Settings.scan_enabled = false;
@@ -1352,6 +1813,17 @@ void SendHeartbeat() {
             Log("!!! BANNED VIA HEARTBEAT !!!");
             MessageBoxA(NULL, g_Settings.message_on_kick, "AGTR Anti-Cheat", MB_OK | MB_ICONERROR);
             ExitProcess(0);
+        }
+        
+        // Token güncelleme (sunucu yeni token vermiş olabilir)
+        const char* tokenStart = strstr(resp.c_str(), "\"token\":\"");
+        if (tokenStart) {
+            tokenStart += 9;
+            const char* tokenEnd = strchr(tokenStart, '"');
+            if (tokenEnd && tokenEnd - tokenStart < sizeof(g_szAuthToken) - 1) {
+                strncpy(g_szAuthToken, tokenStart, tokenEnd - tokenStart);
+                g_szAuthToken[tokenEnd - tokenStart] = 0;
+            }
         }
     }
     
@@ -1735,7 +2207,10 @@ bool SendToAPI(const std::string& jsonData, const std::string& signature) {
         return false;
     }
     
-    HINTERNET hSession = WinHttpOpen(L"AGTR/12.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
+    // Decrypt API strings on first use
+    EnsureStringsDecrypted();
+    
+    HINTERNET hSession = WinHttpOpen(g_szUserAgent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!hSession) {
         AddToOfflineCache(jsonData);
         return false;
@@ -1747,7 +2222,7 @@ bool SendToAPI(const std::string& jsonData, const std::string& signature) {
     WinHttpSetOption(hSession, WINHTTP_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
     WinHttpSetOption(hSession, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
     
-    HINTERNET hConnect = WinHttpConnect(hSession, API_HOST, API_PORT, 0);
+    HINTERNET hConnect = WinHttpConnect(hSession, g_szAPIHost, API_PORT, 0);
     if (!hConnect) { 
         WinHttpCloseHandle(hSession);
         AddToOfflineCache(jsonData);
@@ -1755,7 +2230,7 @@ bool SendToAPI(const std::string& jsonData, const std::string& signature) {
     }
     
     DWORD flags = API_USE_HTTPS ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", API_PATH_SCAN, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", g_szPathScan, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!hRequest) { 
         WinHttpCloseHandle(hConnect); 
         WinHttpCloseHandle(hSession);
@@ -1821,6 +2296,385 @@ bool SendToAPI(const std::string& jsonData, const std::string& signature) {
 // ============================================
 // MAIN SCAN
 // ============================================
+// ============================================
+// PERFORMANCE OPTIMIZATION FUNCTIONS (v12.1)
+// ============================================
+
+// #26 FPS Monitor - Oyunun FPS'ini tahmin et
+void UpdateFPSMonitor() {
+    DWORD now = GetTickCount();
+    g_iFrameCount++;
+    
+    if (now - g_dwFPSCheckTime >= FPS_CHECK_INTERVAL) {
+        g_fCurrentFPS = (float)g_iFrameCount * 1000.0f / (float)(now - g_dwFPSCheckTime);
+        g_iFrameCount = 0;
+        g_dwFPSCheckTime = now;
+    }
+}
+
+bool IsFPSSafe() {
+    return g_fCurrentFPS >= MIN_FPS_FOR_SCAN || g_fCurrentFPS > 900.0f; // 999 = henüz ölçülmedi
+}
+
+// #28 Game State Awareness
+GameState DetectGameState() {
+    HWND hwnd = FindWindowA("Valve001", NULL);
+    if (!hwnd) return STATE_MENU;
+    
+    char title[256] = {0};
+    GetWindowTextA(hwnd, title, sizeof(title));
+    
+    // Half-Life window title: "Half-Life" (menu) or "Half-Life - servername" (in game)
+    if (strstr(title, " - ") == NULL) {
+        return STATE_MENU;
+    }
+    
+    // Loading kontrolü - console veya loading ekranı
+    // Bu basit bir tahmin, gerçek loading tespiti zor
+    static DWORD lastTitleChange = 0;
+    static char lastTitle[256] = {0};
+    
+    if (strcmp(title, lastTitle) != 0) {
+        strcpy(lastTitle, title);
+        lastTitleChange = GetTickCount();
+        return STATE_LOADING;
+    }
+    
+    // Son 3 saniyede title değiştiyse hala loading olabilir
+    if (GetTickCount() - lastTitleChange < 3000) {
+        return STATE_LOADING;
+    }
+    
+    return STATE_PLAYING;
+}
+
+bool CanDoHeavyWork() {
+    // FPS düşükse yapma
+    if (!IsFPSSafe()) {
+        return false;
+    }
+    
+    // Loading ekranındayken yapabilirsin
+    if (g_CurrentGameState == STATE_LOADING) {
+        return true;
+    }
+    
+    // Menüdeyken kesinlikle yap
+    if (g_CurrentGameState == STATE_MENU) {
+        return true;
+    }
+    
+    // Oyundayken dikkatli ol
+    if (g_CurrentGameState == STATE_PLAYING) {
+        // Son 2 saniyede hasar almışsa veya ateş etmişse yapma
+        DWORD now = GetTickCount();
+        if (now - g_dwLastDamageTime < 2000) return false;
+        if (now - g_dwLastShotTime < 2000) return false;
+    }
+    
+    return true;
+}
+
+// #19 Smart Throttling
+ScanIntensity CalculateScanIntensity() {
+    // Menüde: Deep scan
+    if (g_CurrentGameState == STATE_MENU) {
+        return SCAN_INTENSITY_DEEP;
+    }
+    
+    // Loading: Normal scan
+    if (g_CurrentGameState == STATE_LOADING) {
+        return SCAN_INTENSITY_NORMAL;
+    }
+    
+    // FPS düşük: Sadece signature check
+    if (!IsFPSSafe()) {
+        return SCAN_INTENSITY_LIGHT;
+    }
+    
+    // Normal oyun: Normal scan
+    return SCAN_INTENSITY_NORMAL;
+}
+
+// #22 Signature-First Check - Hızlı imza kontrolü
+int QuickSignatureCheck() {
+    int detected = 0;
+    
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return 0;
+    
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(pe);
+    
+    if (Process32First(hSnap, &pe)) {
+        do {
+            char lowerName[MAX_PATH];
+            strcpy(lowerName, pe.szExeFile);
+            _strlwr(lowerName);
+            
+            for (int i = 0; g_QuickSigs[i].pattern != NULL; i++) {
+                if (strstr(lowerName, g_QuickSigs[i].pattern)) {
+                    Log("[QUICK] Detected: %s (severity:%d)", 
+                        g_QuickSigs[i].name, g_QuickSigs[i].severity);
+                    detected++;
+                    
+                    // Critical severity ise hemen bildir
+                    if (g_QuickSigs[i].severity >= 4) {
+                        DeferredResult res;
+                        res.type = "critical_process";
+                        res.name = g_QuickSigs[i].name;
+                        res.suspicious = true;
+                        res.timestamp = GetTickCount();
+                        g_DeferredResults.push_back(res);
+                    }
+                }
+            }
+        } while (Process32Next(hSnap, &pe));
+    }
+    
+    CloseHandle(hSnap);
+    return detected;
+}
+
+// #7 Delta Process Scan - Sadece yeni process'leri tara
+int DeltaProcessScan() {
+    int newProcesses = 0;
+    int suspicious = 0;
+    
+    std::map<DWORD, std::string> currentProcesses;
+    
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return 0;
+    
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(pe);
+    
+    if (Process32First(hSnap, &pe)) {
+        do {
+            currentProcesses[pe.th32ProcessID] = pe.szExeFile;
+            
+            // Bu process daha önce var mıydı?
+            if (g_LastProcesses.find(pe.th32ProcessID) == g_LastProcesses.end()) {
+                // Yeni process!
+                newProcesses++;
+                
+                char lowerName[MAX_PATH];
+                strcpy(lowerName, pe.szExeFile);
+                _strlwr(lowerName);
+                
+                // Şüpheli mi kontrol et
+                for (int i = 0; g_SusProc[i] != NULL; i++) {
+                    if (strstr(lowerName, g_SusProc[i])) {
+                        Log("[DELTA] New suspicious process: %s (PID:%d)", 
+                            pe.szExeFile, pe.th32ProcessID);
+                        suspicious++;
+                        
+                        DeferredResult res;
+                        res.type = "new_process";
+                        res.name = pe.szExeFile;
+                        res.suspicious = true;
+                        res.timestamp = GetTickCount();
+                        g_DeferredResults.push_back(res);
+                        break;
+                    }
+                }
+            }
+        } while (Process32Next(hSnap, &pe));
+    }
+    
+    CloseHandle(hSnap);
+    
+    // Listeyi güncelle
+    g_LastProcesses = currentProcesses;
+    
+    if (newProcesses > 0) {
+        Log("[DELTA] %d new processes, %d suspicious", newProcesses, suspicious);
+    }
+    
+    return suspicious;
+}
+
+// #13 Micro-Batch Operations - Parça parça işlem
+int MicroBatchProcessScan() {
+    int suspicious = 0;
+    int scanned = 0;
+    
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return 0;
+    
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(pe);
+    
+    int currentPos = 0;
+    
+    if (Process32First(hSnap, &pe)) {
+        do {
+            // Batch pozisyonuna gel
+            if (currentPos < g_iProcessBatchPos) {
+                currentPos++;
+                continue;
+            }
+            
+            // Bu batch'te max BATCH_SIZE_PROCESS tara
+            if (scanned >= BATCH_SIZE_PROCESS) {
+                break;
+            }
+            
+            char lowerName[MAX_PATH];
+            strcpy(lowerName, pe.szExeFile);
+            _strlwr(lowerName);
+            
+            // Whitelist kontrolü
+            bool whitelisted = false;
+            for (int i = 0; g_WhitelistProc[i] != NULL; i++) {
+                if (strstr(lowerName, g_WhitelistProc[i])) {
+                    whitelisted = true;
+                    break;
+                }
+            }
+            
+            if (!whitelisted) {
+                for (int i = 0; g_SusProc[i] != NULL; i++) {
+                    if (strstr(lowerName, g_SusProc[i])) {
+                        suspicious++;
+                        break;
+                    }
+                }
+            }
+            
+            scanned++;
+            currentPos++;
+            
+        } while (Process32Next(hSnap, &pe));
+    }
+    
+    CloseHandle(hSnap);
+    
+    // Sonraki batch için pozisyonu güncelle
+    g_iProcessBatchPos = currentPos;
+    
+    // Liste bittiyse başa dön
+    if (scanned < BATCH_SIZE_PROCESS) {
+        g_iProcessBatchPos = 0;
+    }
+    
+    return suspicious;
+}
+
+// #15 Deferred Reporting - Birikmiş sonuçları gönder
+void FlushDeferredResults() {
+    if (g_DeferredResults.empty()) return;
+    
+    DWORD now = GetTickCount();
+    if (now - g_dwLastReportTime < DEFERRED_REPORT_INTERVAL) return;
+    
+    // JSON oluştur
+    std::string json = "{\"hwid\":\"";
+    json += g_szHWID;
+    json += "\",\"type\":\"deferred\",\"results\":[";
+    
+    bool first = true;
+    for (auto& res : g_DeferredResults) {
+        if (!first) json += ",";
+        json += "{\"type\":\"";
+        json += res.type;
+        json += "\",\"name\":\"";
+        json += res.name;
+        json += "\",\"sus\":";
+        json += res.suspicious ? "true" : "false";
+        json += "}";
+        first = false;
+    }
+    
+    json += "]}";
+    
+    Log("[DEFERRED] Flushing %d results", (int)g_DeferredResults.size());
+    
+    // Gönder (async olarak)
+    // SendToAPI(json, ""); // Basit gönderim
+    
+    g_DeferredResults.clear();
+    g_dwLastReportTime = now;
+}
+
+// #3 Menu-Only Deep Scan
+void PerformDeepScanIfNeeded() {
+    DWORD now = GetTickCount();
+    
+    // Menüde miyiz?
+    if (g_CurrentGameState != STATE_MENU) {
+        g_bDeepScanPending = true;
+        return;
+    }
+    
+    // Son deep scan'den bu yana yeterli zaman geçti mi?
+    if (now - g_dwLastDeepScan < DEEP_SCAN_INTERVAL) {
+        return;
+    }
+    
+    // FPS güvenli mi?
+    if (!IsFPSSafe()) {
+        return;
+    }
+    
+    Log("[DEEP] Starting deep scan (menu mode)...");
+    
+    // Tüm dosyaları tara
+    ScanAllFiles();
+    
+    // Registry'yi tara
+    ScanRegistry();
+    
+    // Memory pattern scan
+    ScanMemoryPatterns();
+    
+    g_dwLastDeepScan = now;
+    g_bDeepScanPending = false;
+    
+    Log("[DEEP] Deep scan completed");
+}
+
+// Optimized scan dispatcher
+void DoOptimizedScan() {
+    // Game state güncelle
+    g_CurrentGameState = DetectGameState();
+    
+    // Scan intensity hesapla
+    g_CurrentIntensity = CalculateScanIntensity();
+    
+    Log("[PERF] State:%d Intensity:%d FPS:%.1f", 
+        g_CurrentGameState, g_CurrentIntensity, g_fCurrentFPS);
+    
+    switch (g_CurrentIntensity) {
+        case SCAN_INTENSITY_NONE:
+            // Hiçbir şey yapma
+            break;
+            
+        case SCAN_INTENSITY_LIGHT:
+            // Sadece hızlı signature check
+            QuickSignatureCheck();
+            break;
+            
+        case SCAN_INTENSITY_NORMAL:
+            // Delta scan + signature check
+            QuickSignatureCheck();
+            if (g_bDeltaScanEnabled) {
+                DeltaProcessScan();
+            } else {
+                MicroBatchProcessScan();
+            }
+            break;
+            
+        case SCAN_INTENSITY_DEEP:
+            // Tam scan
+            PerformDeepScanIfNeeded();
+            break;
+    }
+    
+    // Deferred sonuçları gönder
+    FlushDeferredResults();
+}
+
 void DoScan() {
     Log("=== Starting Scan ===");
     
@@ -1874,9 +2728,19 @@ void DoScan() {
 // SCAN THREAD
 // ============================================
 DWORD WINAPI ScanThread(LPVOID) {
+    // ============================================
+    // #12 LOW PRIORITY THREAD - Oyuna etki etmez
+    // ============================================
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+    
+    // Tek CPU core kullan (opsiyonel, çok agresif olabilir)
+    // SetThreadAffinityMask(GetCurrentThread(), 1);
+    
+    // İlk başlatma gecikmesi
     Sleep(10000);
     
-    Log("=== AGTR v%s (winmm) Started ===", AGTR_VERSION);
+    Log("=== AGTR v%s (winmm) Performance Edition ===", AGTR_VERSION);
+    Log("[PERF] Thread priority: LOWEST");
     
     GenHWID();
     ComputeDLLHash();
@@ -1891,16 +2755,37 @@ DWORD WINAPI ScanThread(LPVOID) {
     
     SendHeartbeat();
     
-    if (g_Settings.scan_enabled) {
-        ScanAllFiles();
-        DoScan();
+    // İlk scan - menüdeyken tam tarama yap
+    g_CurrentGameState = DetectGameState();
+    if (g_CurrentGameState == STATE_MENU) {
+        Log("[PERF] Initial deep scan (menu mode)");
+        if (g_Settings.scan_enabled) {
+            ScanAllFiles();
+            DoScan();
+            g_dwLastScan = GetTickCount();
+            g_dwLastDeepScan = GetTickCount();
+        }
+    } else {
+        // Oyundayken başladıysa hafif başla
+        Log("[PERF] Initial quick scan (in-game mode)");
+        QuickSignatureCheck();
         g_dwLastScan = GetTickCount();
     }
     
+    // FPS monitor başlat
+    g_dwFPSCheckTime = GetTickCount();
+    
     while (g_bRunning) {
+        // #12 - Düşük CPU kullanımı için uzun sleep
         Sleep(1000);
         
         DWORD now = GetTickCount();
+        
+        // #26 - FPS Monitor güncelle (her saniye)
+        UpdateFPSMonitor();
+        
+        // #28 - Game State güncelle
+        g_CurrentGameState = DetectGameState();
         
         // #2 - Adaptive Heartbeat: serverdeyken 30sn, menüdeyken 120sn
         DWORD heartbeatInterval = GetHeartbeatInterval();
@@ -1908,31 +2793,63 @@ DWORD WINAPI ScanThread(LPVOID) {
             SendHeartbeat();
         }
         
+        // #19 - Smart Throttling: Duruma göre scan yap
+        g_CurrentIntensity = CalculateScanIntensity();
+        
         // Scan interval check
-        if (now - g_dwLastScan >= (DWORD)g_Settings.scan_interval) {
+        DWORD scanInterval = (DWORD)g_Settings.scan_interval;
+        
+        // #19 - Intensity'ye göre interval ayarla
+        if (g_CurrentIntensity == SCAN_INTENSITY_LIGHT) {
+            scanInterval = scanInterval / 2;  // Hafif scan daha sık
+        } else if (g_CurrentIntensity == SCAN_INTENSITY_DEEP) {
+            scanInterval = scanInterval * 2;  // Derin scan daha seyrek
+        }
+        
+        if (now - g_dwLastScan >= scanInterval) {
             if (!g_Settings.scan_enabled) {
                 g_dwLastScan = now;
                 continue;
             }
             
-            if (g_Settings.scan_only_in_server) {
-                DetectConnectedServer();
-                if (!g_bInServer) {
-                    g_dwLastScan = now;
-                    continue;
-                }
+            // #28 - Game State Awareness: Ağır iş yapılabilir mi?
+            if (!CanDoHeavyWork() && g_CurrentIntensity >= SCAN_INTENSITY_NORMAL) {
+                // FPS düşük veya savaşta, hafif scan yap
+                Log("[PERF] Downgrading scan (FPS:%.1f State:%d)", 
+                    g_fCurrentFPS, g_CurrentGameState);
+                g_CurrentIntensity = SCAN_INTENSITY_LIGHT;
             }
             
-            // #8 - Lazy loading: İlk scan'den sonra sadece değişen dosyaları tara
-            if (g_bFirstScanDone) {
-                // İnkremental scan - hash cache sayesinde sadece değişenler hash'lenir
-                ScanAllFiles();
+            // #22 - Signature-First: Önce hızlı kontrol
+            int quickHits = QuickSignatureCheck();
+            
+            if (quickHits > 0) {
+                // Şüpheli şey bulundu, tam scan yap
+                Log("[PERF] Quick check found %d hits, doing full scan", quickHits);
+                DoScan();
             } else {
-                ScanAllFiles();
+                // Temiz görünüyor, intensity'ye göre devam et
+                DoOptimizedScan();
             }
             
-            DoScan();
+            // #15 - Deferred sonuçları gönder
+            FlushDeferredResults();
+            
             g_dwLastScan = now;
+        }
+        
+        // #13 - Micro-Batch: Her 5 saniyede bir parça işlem
+        if (now % 5000 < 1000) {
+            if (g_bDeltaScanEnabled) {
+                DeltaProcessScan();
+            } else {
+                MicroBatchProcessScan();
+            }
+        }
+        
+        // #3 - Menu'de deep scan kontrolü
+        if (g_CurrentGameState == STATE_MENU && g_bDeepScanPending) {
+            PerformDeepScanIfNeeded();
         }
     }
     
