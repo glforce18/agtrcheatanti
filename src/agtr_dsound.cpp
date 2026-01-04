@@ -7,8 +7,15 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <objbase.h>  // LPUNKNOWN, LPCGUID için
 #include <stdio.h>
+
+// COM tipleri - sadece pointer olarak kullanılıyor
+#ifndef LPUNKNOWN
+typedef void* LPUNKNOWN;
+#endif
+#ifndef LPCGUID
+typedef const GUID* LPCGUID;
+#endif
 
 // Orijinal dsound.dll fonksiyonları
 typedef HRESULT (WINAPI *DirectSoundCreate_t)(LPCGUID, LPVOID*, LPUNKNOWN);
