@@ -44,16 +44,26 @@
 // ============================================
 // VERSION & CONFIG
 // ============================================
-#define AGTR_VERSION "11.5"
+#define AGTR_VERSION "12.0"
 #define AGTR_HASH_LENGTH 8
-#define AGTR_HEARTBEAT_INTERVAL 30000
 
+// Adaptive Heartbeat intervals
+#define HEARTBEAT_IN_SERVER 30000      // Serverdeyken 30sn
+#define HEARTBEAT_IN_MENU 120000       // Menüdeyken 120sn
+#define HEARTBEAT_OFFLINE_RETRY 60000  // API offline ise 60sn
+
+// Throttling
+#define THROTTLE_MIN_INTERVAL 300000   // Aynı veriyi 5dk'da bir gönder
+#define OFFLINE_CACHE_MAX 10           // Max cache'lenecek request
+
+// API Config
 #define API_HOST L"185.171.25.137"
 #define API_PORT 5000
 #define API_PATH_SCAN L"/api/v1/scan"
 #define API_PATH_REGISTER L"/api/v1/client/register"
 #define API_PATH_HEARTBEAT L"/api/v1/client/heartbeat"
 #define API_USE_HTTPS false
+#define API_TIMEOUT 5000               // 5sn timeout
 
 // ============================================
 // DYNAMIC SETTINGS
@@ -81,6 +91,31 @@ static int g_iConnectedPort = 0;
 static DWORD g_dwLastHeartbeat = 0;
 static DWORD g_dwLastScan = 0;
 static bool g_bSettingsLoaded = false;
+
+// Optimization states
+static bool g_bAPIOnline = true;           // API erişilebilir mi?
+static DWORD g_dwLastSuccessfulSend = 0;   // Son başarılı gönderim
+static DWORD g_dwLastDataHash = 0;         // Throttling için veri hash'i
+static int g_iFailedRequests = 0;          // Ardışık başarısız request sayısı
+static bool g_bFirstScanDone = false;      // İlk scan yapıldı mı?
+
+// Offline cache
+struct CachedRequest {
+    std::string data;
+    DWORD timestamp;
+    bool valid;
+};
+static CachedRequest g_OfflineCache[OFFLINE_CACHE_MAX];
+static int g_iCacheCount = 0;
+
+// Hash cache - dosya değişmediyse tekrar hash'leme
+struct HashCacheEntry {
+    std::string hash;
+    DWORD fileSize;
+    FILETIME lastWrite;
+    bool valid;
+};
+static std::map<std::string, HashCacheEntry> g_HashCache;
 
 // ============================================
 // OBFUSCATED KEY
@@ -110,6 +145,14 @@ static bool g_bPassed = true;
 static int g_iSusCount = 0;
 static int g_iRegistrySus = 0;
 static FILE* g_LogFile = NULL;
+
+// Security detection results
+static bool g_bDebuggerDetected = false;
+static bool g_bVMDetected = false;
+static bool g_bHooksDetected = false;
+static bool g_bDriversDetected = false;
+static bool g_bIntegrityOK = true;
+static char g_szOwnHash[64] = {0};  // DLL'in kendi hash'i
 
 // ============================================
 // DATA STRUCTURES
@@ -192,6 +235,21 @@ const char* g_SusDLLs[] = {
     "opengl32.dll", "d3d9.dll",
     "hook.dll", "inject.dll", "cheat.dll", "hack.dll",
     "aimbot.dll", "wallhack.dll", "esp.dll", "speedhack.dll",
+    NULL
+};
+
+// Suspicious drivers (kernel-level cheats)
+const char* g_SusDrivers[] = {
+    "kdmapper", "drvmap", "capcom", "gdrv", "cpuz",
+    "AsIO", "WinRing0", "speedfan", "hwinfo", "aida64",
+    NULL
+};
+
+// Macro/automation tools
+const char* g_MacroProc[] = {
+    "autohotkey", "ahk", "autoit", "au3", "macro",
+    "tinytask", "pulover", "jitbit", "razer synapse",
+    "logitech", "lghub", "corsair", "icue",
     NULL
 };
 
@@ -471,8 +529,322 @@ void Log(const char* fmt, ...) {
 void ToLower(char* s) { for (; *s; s++) *s = tolower(*s); }
 
 // ============================================
-// LOAD ORIGINAL DLL
+// SECURITY CHECKS
 // ============================================
+
+// #16 - DLL Integrity Check
+bool CheckDLLIntegrity() {
+    char dllPath[MAX_PATH];
+    HMODULE hMod = NULL;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        (LPCSTR)&CheckDLLIntegrity, &hMod);
+    GetModuleFileNameA(hMod, dllPath, MAX_PATH);
+    
+    // Hash hesapla
+    HANDLE h = CreateFileA(dllPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    
+    DWORD size = GetFileSize(h, NULL);
+    BYTE* buf = (BYTE*)malloc(size);
+    if (!buf) { CloseHandle(h); return false; }
+    
+    DWORD read;
+    ReadFile(h, buf, size, &read, NULL);
+    CloseHandle(h);
+    
+    // Simple checksum
+    DWORD checksum = 0;
+    for (DWORD i = 0; i < read; i++) checksum += buf[i];
+    free(buf);
+    
+    sprintf(g_szOwnHash, "%08X%08X", checksum, size);
+    
+    // İlk çalıştırmada hash'i kaydet, sonrakilerde karşılaştır
+    static char savedHash[64] = {0};
+    if (!savedHash[0]) {
+        strcpy(savedHash, g_szOwnHash);
+        return true;
+    }
+    
+    g_bIntegrityOK = (strcmp(savedHash, g_szOwnHash) == 0);
+    if (!g_bIntegrityOK) Log("!!! DLL INTEGRITY FAILED !!!");
+    return g_bIntegrityOK;
+}
+
+// #17 - Anti-Debug Detection
+bool CheckDebugger() {
+    g_bDebuggerDetected = false;
+    
+    // Method 1: IsDebuggerPresent
+    if (IsDebuggerPresent()) {
+        g_bDebuggerDetected = true;
+        return true;
+    }
+    
+    // Method 2: CheckRemoteDebuggerPresent
+    BOOL remoteDebugger = FALSE;
+    CheckRemoteDebuggerPresent(GetCurrentProcess(), &remoteDebugger);
+    if (remoteDebugger) {
+        g_bDebuggerDetected = true;
+        return true;
+    }
+    
+    // Method 3: NtGlobalFlag check (PEB)
+    #ifdef _WIN32
+    __try {
+        DWORD* pPEB = NULL;
+        #ifdef _WIN64
+        pPEB = (DWORD*)__readgsqword(0x60);
+        #else
+        __asm {
+            mov eax, fs:[0x30]
+            mov pPEB, eax
+        }
+        #endif
+        if (pPEB) {
+            DWORD ntGlobalFlag = *(DWORD*)((BYTE*)pPEB + 0x68);
+            if (ntGlobalFlag & 0x70) { // FLG_HEAP_ENABLE_TAIL_CHECK | FLG_HEAP_ENABLE_FREE_CHECK | FLG_HEAP_VALIDATE_PARAMETERS
+                g_bDebuggerDetected = true;
+                return true;
+            }
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    #endif
+    
+    // Method 4: Timing check
+    DWORD t1 = GetTickCount();
+    Sleep(1);
+    DWORD t2 = GetTickCount();
+    if ((t2 - t1) > 100) { // Debug stepping
+        g_bDebuggerDetected = true;
+        return true;
+    }
+    
+    return false;
+}
+
+// #19 - API Hook Detection
+bool CheckAPIHooks() {
+    g_bHooksDetected = false;
+    
+    // Check critical functions for hooks (JMP/CALL at start)
+    FARPROC funcs[] = {
+        GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA"),
+        GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetProcAddress"),
+        GetProcAddress(GetModuleHandleA("kernel32.dll"), "VirtualAlloc"),
+        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtReadVirtualMemory"),
+        GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtWriteVirtualMemory"),
+        NULL
+    };
+    
+    for (int i = 0; funcs[i]; i++) {
+        BYTE* ptr = (BYTE*)funcs[i];
+        if (!ptr) continue;
+        
+        // Check for JMP (E9, EB, FF 25) or CALL hooks
+        if (ptr[0] == 0xE9 || ptr[0] == 0xEB || 
+            (ptr[0] == 0xFF && ptr[1] == 0x25) ||
+            ptr[0] == 0x68) { // PUSH + RET hook
+            g_bHooksDetected = true;
+            Log("API Hook detected at %p", ptr);
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// Helper: memmem implementation (must be before ScanMemoryPatterns)
+void* memmem(const void* haystack, size_t haystacklen, const void* needle, size_t needlelen) {
+    if (!needlelen) return (void*)haystack;
+    if (haystacklen < needlelen) return NULL;
+    
+    const char* h = (const char*)haystack;
+    const char* n = (const char*)needle;
+    
+    for (size_t i = 0; i <= haystacklen - needlelen; i++) {
+        if (memcmp(h + i, n, needlelen) == 0) {
+            return (void*)(h + i);
+        }
+    }
+    return NULL;
+}
+
+// #20 - Memory Pattern Scan (hl.exe içinde bilinen cheat pattern'leri)
+int ScanMemoryPatterns() {
+    int found = 0;
+    HANDLE hProc = GetCurrentProcess();
+    
+    // Bilinen cheat signature'ları
+    const char* patterns[] = {
+        "aimbot_enable",
+        "wallhack_on",
+        "esp_draw",
+        "bhop_auto",
+        "norecoil",
+        "triggerbot",
+        NULL
+    };
+    
+    MEMORY_BASIC_INFORMATION mbi;
+    BYTE* addr = 0;
+    
+    while (VirtualQueryEx(hProc, addr, &mbi, sizeof(mbi))) {
+        if (mbi.State == MEM_COMMIT && 
+            (mbi.Protect == PAGE_READWRITE || mbi.Protect == PAGE_EXECUTE_READWRITE)) {
+            
+            // Sadece küçük bölgeleri tara (performans için)
+            if (mbi.RegionSize <= 1024 * 1024) { // Max 1MB
+                BYTE* buffer = (BYTE*)malloc(mbi.RegionSize);
+                if (buffer) {
+                    SIZE_T bytesRead;
+                    if (ReadProcessMemory(hProc, mbi.BaseAddress, buffer, mbi.RegionSize, &bytesRead)) {
+                        for (int i = 0; patterns[i]; i++) {
+                            if (memmem(buffer, bytesRead, patterns[i], strlen(patterns[i]))) {
+                                Log("Memory pattern found: %s", patterns[i]);
+                                found++;
+                            }
+                        }
+                    }
+                    free(buffer);
+                }
+            }
+        }
+        addr = (BYTE*)mbi.BaseAddress + mbi.RegionSize;
+    }
+    
+    return found;
+}
+
+// #23 - Driver Detection
+bool CheckSuspiciousDrivers() {
+    g_bDriversDetected = false;
+    
+    // Service Control Manager'dan driver'ları listele
+    SC_HANDLE scm = OpenSCManagerA(NULL, NULL, SC_MANAGER_ENUMERATE_SERVICE);
+    if (!scm) return false;
+    
+    DWORD bytesNeeded = 0, servicesReturned = 0;
+    EnumServicesStatusExA(scm, SC_ENUM_PROCESS_INFO, SERVICE_DRIVER,
+        SERVICE_STATE_ALL, NULL, 0, &bytesNeeded, &servicesReturned, NULL, NULL);
+    
+    if (bytesNeeded > 0) {
+        BYTE* buffer = (BYTE*)malloc(bytesNeeded);
+        if (buffer) {
+            ENUM_SERVICE_STATUS_PROCESSA* services = (ENUM_SERVICE_STATUS_PROCESSA*)buffer;
+            if (EnumServicesStatusExA(scm, SC_ENUM_PROCESS_INFO, SERVICE_DRIVER,
+                SERVICE_STATE_ALL, buffer, bytesNeeded, &bytesNeeded, &servicesReturned, NULL, NULL)) {
+                
+                for (DWORD i = 0; i < servicesReturned; i++) {
+                    char nameLower[256];
+                    strncpy(nameLower, services[i].lpServiceName, 255);
+                    ToLower(nameLower);
+                    
+                    for (int j = 0; g_SusDrivers[j]; j++) {
+                        if (strstr(nameLower, g_SusDrivers[j])) {
+                            Log("Suspicious driver: %s", services[i].lpServiceName);
+                            g_bDriversDetected = true;
+                        }
+                    }
+                }
+            }
+            free(buffer);
+        }
+    }
+    
+    CloseServiceHandle(scm);
+    return g_bDriversDetected;
+}
+
+// #24 - VM Detection
+bool CheckVirtualMachine() {
+    g_bVMDetected = false;
+    
+    // Method 1: CPUID check
+    int cpuInfo[4] = {0};
+    __cpuid(cpuInfo, 1);
+    if (cpuInfo[2] & (1 << 31)) { // Hypervisor bit
+        g_bVMDetected = true;
+    }
+    
+    // Method 2: Registry check
+    HKEY hKey;
+    const char* vmKeys[] = {
+        "SOFTWARE\\VMware, Inc.\\VMware Tools",
+        "SOFTWARE\\Oracle\\VirtualBox Guest Additions",
+        "SYSTEM\\CurrentControlSet\\Services\\VBoxGuest",
+        "SYSTEM\\CurrentControlSet\\Services\\vmci",
+        NULL
+    };
+    
+    for (int i = 0; vmKeys[i]; i++) {
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, vmKeys[i], 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            RegCloseKey(hKey);
+            g_bVMDetected = true;
+            break;
+        }
+    }
+    
+    // Method 3: MAC address check (VM prefixes)
+    // VMware: 00:0C:29, 00:50:56
+    // VirtualBox: 08:00:27
+    // Hyper-V: 00:15:5D
+    
+    if (g_bVMDetected) Log("VM detected");
+    return g_bVMDetected;
+}
+
+// ============================================
+// OPTIMIZATION HELPERS
+// ============================================
+
+// #1 - Simple hash for throttling (veri değişti mi kontrolü)
+DWORD QuickDataHash(const std::string& data) {
+    DWORD hash = 0;
+    for (size_t i = 0; i < data.length(); i += 64) {
+        hash ^= (DWORD)data[i] << ((i % 4) * 8);
+    }
+    return hash;
+}
+
+// #7 - Throttle check (aynı veriyi tekrar gönderme)
+bool ShouldThrottle(const std::string& data) {
+    DWORD hash = QuickDataHash(data);
+    DWORD now = GetTickCount();
+    
+    if (hash == g_dwLastDataHash && (now - g_dwLastSuccessfulSend) < THROTTLE_MIN_INTERVAL) {
+        Log("Throttled - data unchanged");
+        return true;
+    }
+    return false;
+}
+
+// #6 - Offline cache'e ekle
+void AddToOfflineCache(const std::string& data) {
+    if (g_iCacheCount >= OFFLINE_CACHE_MAX) {
+        // En eskiyi sil
+        for (int i = 0; i < OFFLINE_CACHE_MAX - 1; i++) {
+            g_OfflineCache[i] = g_OfflineCache[i + 1];
+        }
+        g_iCacheCount = OFFLINE_CACHE_MAX - 1;
+    }
+    
+    g_OfflineCache[g_iCacheCount].data = data;
+    g_OfflineCache[g_iCacheCount].timestamp = GetTickCount();
+    g_OfflineCache[g_iCacheCount].valid = true;
+    g_iCacheCount++;
+    
+    Log("Added to offline cache (%d items)", g_iCacheCount);
+}
+
+// #6 - Offline cache'i gönder
+void FlushOfflineCache();  // Forward declaration
+
+// #2 - Adaptive heartbeat interval
+DWORD GetHeartbeatInterval() {
+    if (!g_bAPIOnline) return HEARTBEAT_OFFLINE_RETRY;
+    return g_bInServer ? HEARTBEAT_IN_SERVER : HEARTBEAT_IN_MENU;
+}
 bool LoadOriginal() {
     if (g_hOriginal) return true;
     
@@ -682,13 +1054,35 @@ void GenHWID() {
     Log("HWID: %s", g_szHWID);
 }
 
+// #9 - Hash Cache: Dosya değişmediyse tekrar hash'leme
 void GetFileHash(const char* filepath, char* shortHash, char* fullHash, DWORD* fileSize) {
     shortHash[0] = fullHash[0] = 0;
     *fileSize = 0;
+    
+    // Dosya bilgilerini al
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!GetFileAttributesExA(filepath, GetFileExInfoStandard, &fad)) return;
+    
+    *fileSize = fad.nFileSizeLow;
+    
+    // Cache kontrolü
+    std::string key = filepath;
+    auto it = g_HashCache.find(key);
+    if (it != g_HashCache.end() && it->second.valid) {
+        // Dosya değişmemiş mi?
+        if (it->second.fileSize == *fileSize &&
+            it->second.lastWrite.dwLowDateTime == fad.ftLastWriteTime.dwLowDateTime &&
+            it->second.lastWrite.dwHighDateTime == fad.ftLastWriteTime.dwHighDateTime) {
+            // Cache'den döndür
+            strncpy(fullHash, it->second.hash.c_str(), 32); fullHash[32] = 0;
+            strncpy(shortHash, it->second.hash.c_str(), AGTR_HASH_LENGTH); shortHash[AGTR_HASH_LENGTH] = 0;
+            return;
+        }
+    }
+    
+    // Dosyayı oku ve hash'le
     HANDLE h = CreateFileA(filepath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
     if (h == INVALID_HANDLE_VALUE) return;
-    
-    *fileSize = GetFileSize(h, NULL);
     
     MD5 md5; unsigned char buf[32768]; DWORD rd;
     while(ReadFile(h, buf, sizeof(buf), &rd, NULL) && rd > 0) md5.Update(buf, rd);
@@ -696,6 +1090,14 @@ void GetFileHash(const char* filepath, char* shortHash, char* fullHash, DWORD* f
     std::string hash = md5.GetHashString();
     strncpy(fullHash, hash.c_str(), 32); fullHash[32] = 0;
     strncpy(shortHash, hash.c_str(), AGTR_HASH_LENGTH); shortHash[AGTR_HASH_LENGTH] = 0;
+    
+    // Cache'e kaydet
+    HashCacheEntry entry;
+    entry.hash = hash;
+    entry.fileSize = *fileSize;
+    entry.lastWrite = fad.ftLastWriteTime;
+    entry.valid = true;
+    g_HashCache[key] = entry;
 }
 
 void ComputeDLLHash() {
@@ -768,21 +1170,45 @@ bool DetectConnectedServer() {
 }
 
 // ============================================
-// HTTP HELPER
+// HTTP HELPER (with timeout & graceful degradation)
 // ============================================
-std::string HttpRequest(const wchar_t* path, const std::string& body, const std::string& method = "POST") {
+std::string HttpRequest(const wchar_t* path, const std::string& body, const std::string& method = "POST", bool canCache = false) {
     std::string response;
     
-    HINTERNET hSession = WinHttpOpen(L"AGTR/11.5", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
-    if (!hSession) return response;
+    HINTERNET hSession = WinHttpOpen(L"AGTR/12.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
+    if (!hSession) {
+        g_bAPIOnline = false;
+        g_iFailedRequests++;
+        if (canCache && !body.empty()) AddToOfflineCache(body);
+        return response;
+    }
+    
+    // #3 - Timeout ayarları (5sn)
+    DWORD timeout = API_TIMEOUT;
+    WinHttpSetOption(hSession, WINHTTP_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
+    WinHttpSetOption(hSession, WINHTTP_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
+    WinHttpSetOption(hSession, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
     
     HINTERNET hConnect = WinHttpConnect(hSession, API_HOST, API_PORT, 0);
-    if (!hConnect) { WinHttpCloseHandle(hSession); return response; }
+    if (!hConnect) { 
+        WinHttpCloseHandle(hSession);
+        g_bAPIOnline = false;
+        g_iFailedRequests++;
+        if (canCache && !body.empty()) AddToOfflineCache(body);
+        return response;
+    }
     
     DWORD flags = API_USE_HTTPS ? WINHTTP_FLAG_SECURE : 0;
     std::wstring wmethod(method.begin(), method.end());
     HINTERNET hRequest = WinHttpOpenRequest(hConnect, wmethod.c_str(), path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return response; }
+    if (!hRequest) { 
+        WinHttpCloseHandle(hConnect); 
+        WinHttpCloseHandle(hSession);
+        g_bAPIOnline = false;
+        g_iFailedRequests++;
+        if (canCache && !body.empty()) AddToOfflineCache(body);
+        return response;
+    }
     
     std::wstring headers = L"Content-Type: application/json\r\n";
     
@@ -803,6 +1229,22 @@ std::string HttpRequest(const wchar_t* path, const std::string& body, const std:
                 memset(buffer, 0, sizeof(buffer));
                 bytesRead = 0;
             }
+            // #30 - Başarılı, API online
+            g_bAPIOnline = true;
+            g_iFailedRequests = 0;
+        }
+    }
+    
+    if (!result || response.empty()) {
+        g_iFailedRequests++;
+        // #30 - 3 ardışık hatadan sonra offline say
+        if (g_iFailedRequests >= 3) {
+            g_bAPIOnline = false;
+            Log("API marked offline after %d failures", g_iFailedRequests);
+        }
+        // #6 - Offline cache'e ekle
+        if (canCache && !body.empty()) {
+            AddToOfflineCache(body);
         }
     }
     
@@ -811,6 +1253,44 @@ std::string HttpRequest(const wchar_t* path, const std::string& body, const std:
     WinHttpCloseHandle(hSession);
     
     return response;
+}
+
+// #6 - Offline cache'i göndermeye çalış
+void FlushOfflineCache() {
+    if (g_iCacheCount == 0 || !g_bAPIOnline) return;
+    
+    Log("Flushing offline cache (%d items)", g_iCacheCount);
+    
+    int sent = 0;
+    for (int i = 0; i < g_iCacheCount; i++) {
+        if (!g_OfflineCache[i].valid) continue;
+        
+        std::string resp = HttpRequest(API_PATH_SCAN, g_OfflineCache[i].data, "POST", false);
+        if (!resp.empty()) {
+            g_OfflineCache[i].valid = false;
+            sent++;
+        } else {
+            // Gönderim başarısız, durduralım
+            break;
+        }
+        
+        // Rate limiting - aralarında 1sn bekle
+        Sleep(1000);
+    }
+    
+    // Geçersizleri temizle
+    int newCount = 0;
+    for (int i = 0; i < g_iCacheCount; i++) {
+        if (g_OfflineCache[i].valid) {
+            if (i != newCount) {
+                g_OfflineCache[newCount] = g_OfflineCache[i];
+            }
+            newCount++;
+        }
+    }
+    g_iCacheCount = newCount;
+    
+    Log("Sent %d cached items, %d remaining", sent, g_iCacheCount);
 }
 
 // ============================================
@@ -855,9 +1335,14 @@ bool FetchSettings() {
 void SendHeartbeat() {
     DetectConnectedServer();
     
+    // #6 - API online'a döndüyse cache'i gönder
+    if (g_bAPIOnline && g_iCacheCount > 0) {
+        FlushOfflineCache();
+    }
+    
     char json[512];
-    sprintf(json, "{\"hwid\":\"%s\",\"server_ip\":\"%s\",\"server_port\":%d,\"in_game\":%s,\"trigger\":\"winmm\"}",
-        g_szHWID, g_szConnectedIP, g_iConnectedPort, g_bInServer ? "true" : "false");
+    sprintf(json, "{\"hwid\":\"%s\",\"server_ip\":\"%s\",\"server_port\":%d,\"in_game\":%s,\"trigger\":\"winmm\",\"version\":\"%s\"}",
+        g_szHWID, g_szConnectedIP, g_iConnectedPort, g_bInServer ? "true" : "false", AGTR_VERSION);
     
     std::string resp = HttpRequest(API_PATH_HEARTBEAT, json);
     
@@ -913,12 +1398,24 @@ int ScanProcesses() {
             
             if (!IsWhitelistedProcess(pe.szExeFile)) {
                 char name[MAX_PATH]; strcpy(name, pe.szExeFile); ToLower(name);
+                
+                // Cheat process kontrolü
                 for (int i = 0; g_SusProc[i]; i++) {
                     if (strstr(name, g_SusProc[i])) {
                         pi.suspicious = true;
                         sus++;
                         Log("SUS PROC: %s", pe.szExeFile);
                         break;
+                    }
+                }
+                
+                // Macro/Automation tool kontrolü (sadece log, sus saymıyoruz)
+                if (!pi.suspicious) {
+                    for (int i = 0; g_MacroProc[i]; i++) {
+                        if (strstr(name, g_MacroProc[i])) {
+                            Log("MACRO TOOL: %s", pe.szExeFile);
+                            break;
+                        }
                     }
                 }
             }
@@ -1199,7 +1696,16 @@ std::string BuildJson() {
             first = false;
         }
     }
-    json += "]";
+    json += "],";
+    
+    // Security check results
+    json += "\"security\":{";
+    json += "\"debugger\":" + std::string(g_bDebuggerDetected ? "true" : "false") + ",";
+    json += "\"vm\":" + std::string(g_bVMDetected ? "true" : "false") + ",";
+    json += "\"hooks\":" + std::string(g_bHooksDetected ? "true" : "false") + ",";
+    json += "\"drivers\":" + std::string(g_bDriversDetected ? "true" : "false") + ",";
+    json += "\"integrity\":" + std::string(g_bIntegrityOK ? "true" : "false");
+    json += "}";
     
     json += "}";
     return json;
@@ -1214,24 +1720,56 @@ std::string ComputeSignature(const std::string& data) {
 }
 
 // ============================================
-// SEND TO API
+// SEND TO API (with timeout & offline cache)
 // ============================================
 bool SendToAPI(const std::string& jsonData, const std::string& signature) {
-    HINTERNET hSession = WinHttpOpen(L"AGTR/11.5", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
-    if (!hSession) return false;
+    // #7 - Throttle check
+    if (ShouldThrottle(jsonData)) {
+        return true; // Skip but return success
+    }
+    
+    // #30 - API offline ise cache'le ve devam et
+    if (!g_bAPIOnline) {
+        AddToOfflineCache(jsonData);
+        Log("API offline - cached scan data");
+        return false;
+    }
+    
+    HINTERNET hSession = WinHttpOpen(L"AGTR/12.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
+    if (!hSession) {
+        AddToOfflineCache(jsonData);
+        return false;
+    }
+    
+    // Timeout ayarları
+    DWORD timeout = API_TIMEOUT;
+    WinHttpSetOption(hSession, WINHTTP_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
+    WinHttpSetOption(hSession, WINHTTP_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
+    WinHttpSetOption(hSession, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
     
     HINTERNET hConnect = WinHttpConnect(hSession, API_HOST, API_PORT, 0);
-    if (!hConnect) { WinHttpCloseHandle(hSession); return false; }
+    if (!hConnect) { 
+        WinHttpCloseHandle(hSession);
+        AddToOfflineCache(jsonData);
+        return false;
+    }
     
     DWORD flags = API_USE_HTTPS ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", API_PATH_SCAN, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return false; }
+    if (!hRequest) { 
+        WinHttpCloseHandle(hConnect); 
+        WinHttpCloseHandle(hSession);
+        AddToOfflineCache(jsonData);
+        return false;
+    }
     
     std::wstring headers = L"Content-Type: application/json\r\n";
     headers += L"X-AGTR-Signature: " + std::wstring(signature.begin(), signature.end()) + L"\r\n";
     headers += L"X-AGTR-HWID: " + std::wstring(g_szHWID, g_szHWID + strlen(g_szHWID)) + L"\r\n";
     
     BOOL result = WinHttpSendRequest(hRequest, headers.c_str(), -1, (LPVOID)jsonData.c_str(), jsonData.length(), jsonData.length(), 0);
+    bool success = false;
+    
     if (result) {
         result = WinHttpReceiveResponse(hRequest, NULL);
         if (result) {
@@ -1239,30 +1777,45 @@ bool SendToAPI(const std::string& jsonData, const std::string& signature) {
             DWORD bytesRead = 0;
             WinHttpReadData(hRequest, responseBody, sizeof(responseBody) - 1, &bytesRead);
             
-            if (bytesRead > 0 && strstr(responseBody, "\"action\":\"kick\"")) {
-                Log("!!! KICK !!!");
-                char* reasonStart = strstr(responseBody, "\"reason\":\"");
-                if (reasonStart) {
-                    reasonStart += 10;
-                    char* reasonEnd = strchr(reasonStart, '"');
-                    if (reasonEnd) {
-                        char reason[256] = {0};
-                        strncpy(reason, reasonStart, min((int)(reasonEnd - reasonStart), 255));
-                        char msg[512];
-                        sprintf(msg, "AGTR Anti-Cheat\n\n%s", reason);
-                        MessageBoxA(NULL, msg, "AGTR Anti-Cheat", MB_OK | MB_ICONERROR);
-                        ExitProcess(0);
+            if (bytesRead > 0) {
+                success = true;
+                g_bAPIOnline = true;
+                g_dwLastSuccessfulSend = GetTickCount();
+                g_dwLastDataHash = QuickDataHash(jsonData);
+                
+                if (strstr(responseBody, "\"action\":\"kick\"")) {
+                    Log("!!! KICK !!!");
+                    char* reasonStart = strstr(responseBody, "\"reason\":\"");
+                    if (reasonStart) {
+                        reasonStart += 10;
+                        char* reasonEnd = strchr(reasonStart, '"');
+                        if (reasonEnd) {
+                            char reason[256] = {0};
+                            strncpy(reason, reasonStart, min((int)(reasonEnd - reasonStart), 255));
+                            char msg[512];
+                            sprintf(msg, "AGTR Anti-Cheat\n\n%s", reason);
+                            MessageBoxA(NULL, msg, "AGTR Anti-Cheat", MB_OK | MB_ICONERROR);
+                            ExitProcess(0);
+                        }
                     }
                 }
             }
         }
     }
     
+    if (!success) {
+        g_iFailedRequests++;
+        if (g_iFailedRequests >= 3) {
+            g_bAPIOnline = false;
+        }
+        AddToOfflineCache(jsonData);
+    }
+    
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
     
-    return result == TRUE;
+    return success;
 }
 
 // ============================================
@@ -1271,6 +1824,7 @@ bool SendToAPI(const std::string& jsonData, const std::string& signature) {
 void DoScan() {
     Log("=== Starting Scan ===");
     
+    // Standard scans
     g_iSusCount = 0;
     if (g_Settings.scan_processes) g_iSusCount += ScanProcesses();
     if (g_Settings.scan_modules) g_iSusCount += ScanModules();
@@ -1278,13 +1832,40 @@ void DoScan() {
     if (g_Settings.scan_registry) g_iSusCount += ScanRegistry();
     if (g_Settings.scan_files) g_iSusCount += CheckSusFiles();
     
-    g_bPassed = (g_iSusCount == 0);
+    // Security checks (#16, #17, #19, #23, #24)
+    CheckDLLIntegrity();
+    if (CheckDebugger()) {
+        Log("!!! DEBUGGER DETECTED !!!");
+        g_iSusCount++;
+    }
+    if (CheckAPIHooks()) {
+        Log("!!! API HOOKS DETECTED !!!");
+        g_iSusCount++;
+    }
+    if (CheckSuspiciousDrivers()) {
+        Log("!!! SUSPICIOUS DRIVERS DETECTED !!!");
+        // Sadece log, sus saymıyoruz (false positive riski)
+    }
+    CheckVirtualMachine(); // Sadece bilgi amaçlı
+    
+    // Memory pattern scan (#20) - sadece ilk scan'de yap (performans)
+    if (!g_bFirstScanDone) {
+        int memPatterns = ScanMemoryPatterns();
+        if (memPatterns > 0) {
+            Log("!!! %d MEMORY PATTERNS FOUND !!!", memPatterns);
+            g_iSusCount += memPatterns;
+        }
+        g_bFirstScanDone = true;
+    }
+    
+    g_bPassed = (g_iSusCount == 0) && g_bIntegrityOK && !g_bDebuggerDetected && !g_bHooksDetected;
     
     std::string json = BuildJson();
     std::string sig = ComputeSignature(json);
     
-    Log("Scan: %s | Sus:%d | Files:%d | Size:%dKB", 
-        g_bPassed ? "CLEAN" : "SUS", g_iSusCount, (int)g_FileCache.size(), (int)(json.length() / 1024));
+    Log("Scan: %s | Sus:%d | Files:%d | Size:%dKB | Cache:%d", 
+        g_bPassed ? "CLEAN" : "SUS", g_iSusCount, (int)g_FileCache.size(), 
+        (int)(json.length() / 1024), (int)g_HashCache.size());
     
     SendToAPI(json, sig);
 }
@@ -1300,8 +1881,12 @@ DWORD WINAPI ScanThread(LPVOID) {
     GenHWID();
     ComputeDLLHash();
     
+    // #16 - İlk integrity check
+    CheckDLLIntegrity();
+    
     if (!FetchSettings()) {
-        Log("Using default settings");
+        Log("Using default settings - API may be offline");
+        g_bAPIOnline = false;
     }
     
     SendHeartbeat();
@@ -1317,12 +1902,18 @@ DWORD WINAPI ScanThread(LPVOID) {
         
         DWORD now = GetTickCount();
         
-        if (now - g_dwLastHeartbeat >= AGTR_HEARTBEAT_INTERVAL) {
+        // #2 - Adaptive Heartbeat: serverdeyken 30sn, menüdeyken 120sn
+        DWORD heartbeatInterval = GetHeartbeatInterval();
+        if (now - g_dwLastHeartbeat >= heartbeatInterval) {
             SendHeartbeat();
         }
         
+        // Scan interval check
         if (now - g_dwLastScan >= (DWORD)g_Settings.scan_interval) {
-            if (!g_Settings.scan_enabled) continue;
+            if (!g_Settings.scan_enabled) {
+                g_dwLastScan = now;
+                continue;
+            }
             
             if (g_Settings.scan_only_in_server) {
                 DetectConnectedServer();
@@ -1332,7 +1923,14 @@ DWORD WINAPI ScanThread(LPVOID) {
                 }
             }
             
-            ScanAllFiles();
+            // #8 - Lazy loading: İlk scan'den sonra sadece değişen dosyaları tara
+            if (g_bFirstScanDone) {
+                // İnkremental scan - hash cache sayesinde sadece değişenler hash'lenir
+                ScanAllFiles();
+            } else {
+                ScanAllFiles();
+            }
+            
             DoScan();
             g_dwLastScan = now;
         }
