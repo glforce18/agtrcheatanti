@@ -127,6 +127,11 @@ static wchar_t g_szPathConnect[64] = {0};  // v12.2
 static wchar_t g_szUserAgent[32] = {0};
 static bool g_bStringsDecrypted = false;
 
+// v12.4 Security globals (must be before EnsureStringsDecrypted)
+static char g_szSelfHash[65] = {0};       // DLL'in kendi SHA256 hash'i
+static char g_szSelfName[64] = {0};       // DLL'in kendi dosya adı
+static char g_szSignatureKey[64] = {0};   // Decrypted signature key
+
 static void EnsureStringsDecrypted() {
     if (g_bStringsDecrypted) return;
     DecryptStringW(ENC_API_HOST, ENC_API_HOST_LEN, g_szAPIHost);
@@ -434,10 +439,6 @@ static char g_szDLLHash[64] = {0};
 static char g_szGameDir[MAX_PATH] = {0};
 static char g_szValveDir[MAX_PATH] = {0};
 
-// v12.4 Security
-static char g_szSelfHash[65] = {0};       // DLL'in kendi SHA256 hash'i
-static char g_szSelfName[64] = {0};       // DLL'in kendi dosya adı (winmm.dll, dinput8.dll, dsound.dll)
-static char g_szSignatureKey[64] = {0};   // Decrypted signature key
 static char g_szServerIP[64] = "unknown";
 static int g_iServerPort = 0;
 
@@ -954,58 +955,6 @@ bool CheckDLLIntegrity() {
     g_bIntegrityOK = (strcmp(savedHash, g_szOwnHash) == 0);
     if (!g_bIntegrityOK) Log("!!! DLL INTEGRITY FAILED !!!");
     return g_bIntegrityOK;
-}
-
-// #17 - Anti-Debug Detection
-bool CheckDebugger() {
-    g_bDebuggerDetected = false;
-    
-    // Method 1: IsDebuggerPresent
-    if (IsDebuggerPresent()) {
-        g_bDebuggerDetected = true;
-        return true;
-    }
-    
-    // Method 2: CheckRemoteDebuggerPresent
-    BOOL remoteDebugger = FALSE;
-    CheckRemoteDebuggerPresent(GetCurrentProcess(), &remoteDebugger);
-    if (remoteDebugger) {
-        g_bDebuggerDetected = true;
-        return true;
-    }
-    
-    // Method 3: NtGlobalFlag check (PEB)
-    #ifdef _WIN32
-    __try {
-        DWORD* pPEB = NULL;
-        #ifdef _WIN64
-        pPEB = (DWORD*)__readgsqword(0x60);
-        #else
-        __asm {
-            mov eax, fs:[0x30]
-            mov pPEB, eax
-        }
-        #endif
-        if (pPEB) {
-            DWORD ntGlobalFlag = *(DWORD*)((BYTE*)pPEB + 0x68);
-            if (ntGlobalFlag & 0x70) { // FLG_HEAP_ENABLE_TAIL_CHECK | FLG_HEAP_ENABLE_FREE_CHECK | FLG_HEAP_VALIDATE_PARAMETERS
-                g_bDebuggerDetected = true;
-                return true;
-            }
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {}
-    #endif
-    
-    // Method 4: Timing check
-    DWORD t1 = GetTickCount();
-    Sleep(1);
-    DWORD t2 = GetTickCount();
-    if ((t2 - t1) > 100) { // Debug stepping
-        g_bDebuggerDetected = true;
-        return true;
-    }
-    
-    return false;
 }
 
 // #19 - API Hook Detection
