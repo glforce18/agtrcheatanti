@@ -1,110 +1,110 @@
-# AGTR Anti-Cheat v11.5
+# AGTR Anti-Cheat v12.1 - Multi-DLL Proxy System
 
-Half-Life / Adrenaline Gamer için profesyonel anti-cheat sistemi.
+## Genel Bakış
 
-## 🎯 Özellikler
+Bu sistem 3 DLL proxy'den oluşur:
+- **winmm.dll** - Ana anti-cheat modülü (tam tarama)
+- **dinput8.dll** - Tetikleyici proxy (winmm'i yükler)
+- **dsound.dll** - Tetikleyici proxy (winmm'i yükler)
 
-- **%99.9 Garantili Tetikleme** - winmm.dll proxy ile her oyuncuda çalışır
-- **Speedhack Tespiti** - Otomatik timing analizi
-- **Process Scanner** - Şüpheli programları tespit eder
-- **Blacklist Sistemi** - Hash bazlı cheat tespiti
-- **Discord Webhook** - Anlık bildirimler
-- **Admin Panel** - Web tabanlı yönetim
+## v12.1 Yenilikler (Security Edition)
 
-## 📦 İndirme
+### Şifreli String Sistemi
+- Tüm API endpoint'leri runtime'da decrypt edilir
+- XOR + rotating key ile obfuscation
+- Static analiz araçlarına karşı koruma
+- User-Agent string de şifreli
 
-[Releases](../../releases) sayfasından en son sürümü indirin.
+### Güvenlik Özellikleri
+- DLL Integrity Check
+- Anti-Debug Detection (4 method)
+- API Hook Detection
+- Suspicious Driver Detection
+- VM Detection
+- Memory Pattern Scan
 
-## 🔧 Kurulum
+### Performance Optimizasyonları
+- Adaptive Heartbeat (server: 30s, menu: 120s)
+- Smart Throttling (aynı veriyi 5dk'da bir)
+- Offline Cache (10 request)
+- Hash Cache (dosya değişmediyse skip)
+- Lazy Loading
 
-### Client (Oyuncu) Kurulumu
+## Kurulum
 
-1. `winmm.dll` dosyasını indirin
-2. Half-Life klasörüne kopyalayın:
-   ```
-   C:\Program Files (x86)\Steam\steamapps\common\Half-Life\winmm.dll
-   ```
-3. Oyunu başlatın
-4. `agtr_winmm.log` dosyasını kontrol edin
-
-### Server (Sunucu) Kurulumu
-
-1. `agtr_api.py` dosyasını sunucunuza yükleyin
-2. MySQL veritabanını yapılandırın
-3. API'yi başlatın: `python agtr_api.py`
-4. Admin paneline erişin: `http://sunucu-ip:5000/admin`
-
-## 🏗️ Derleme (Build)
-
-GitHub Actions otomatik olarak derler. Manuel derleme için:
-
-```cmd
-# x86 Native Tools Command Prompt açın
-cd src
-cl /O2 /MT /LD agtr_winmm.cpp /link /DEF:winmm.def /OUT:winmm.dll ^
-   winmm.lib winhttp.lib ws2_32.lib iphlpapi.lib psapi.lib advapi32.lib
+Half-Life klasörüne kopyala:
+```
+Half-Life/
+├── hl.exe
+├── winmm.dll      ← Ana modül (ZORUNLU)
+├── dinput8.dll    ← Opsiyonel tetikleyici
+└── dsound.dll     ← Opsiyonel tetikleyici
 ```
 
-## ⚙️ Yapılandırma
+## Derleme
 
-`agtr_winmm.cpp` içinde:
+### Gereksinimler
+- Visual Studio 2022
+- Windows SDK 10.0.19041.0
 
-```cpp
-#define API_HOST L"185.171.25.137"  // API sunucu IP
-#define API_PORT 5000                // API port
+### Manuel Derleme
+```batch
+call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars32.bat"
+
+:: winmm.dll (Ana modül)
+cl.exe /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS src\agtr_winmm.cpp ^
+  /link /DEF:src\winmm.def winhttp.lib advapi32.lib user32.lib psapi.lib shell32.lib ^
+  /OUT:winmm.dll
+
+:: dinput8.dll
+cl.exe /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS src\agtr_dinput8.cpp ^
+  /link /DEF:src\dinput8.def winhttp.lib advapi32.lib user32.lib ^
+  /OUT:dinput8.dll
+
+:: dsound.dll
+cl.exe /O2 /MT /LD /EHsc /DWIN32 /D_WINDOWS src\agtr_dsound.cpp ^
+  /link /DEF:src\dsound.def winhttp.lib advapi32.lib user32.lib ^
+  /OUT:dsound.dll
 ```
 
-## 📊 Nasıl Çalışır?
+### GitHub Actions
+Repository'e push yaptığında otomatik derlenir.
 
-```
-Half-Life başlar
-       │
-       ▼
-winmm.dll yüklenir (bizim proxy)
-       │
-       ▼
-timeGetTime() her frame hook'lanır
-       │
-       ├─► Speedhack tespiti (timing ratio)
-       ├─► Frame sayacı
-       └─► Heartbeat gönderimi
-       │
-       ▼
-API'ye veri gönderilir
-       │
-       ▼
-Blacklist kontrolü + Ban sistemi
-```
+## API Endpoints
 
-## 🛡️ Tespit Edilen Hileler
+| Endpoint | Açıklama |
+|----------|----------|
+| `/api/v1/client/register` | İlk kayıt ve ayarlar |
+| `/api/v1/client/heartbeat` | Periyodik durum bildirimi |
+| `/api/v1/scan` | Tarama sonuçları |
 
-- Speedhack (timing manipulation)
-- Cheat Engine
-- Process Hacker
-- ArtMoney
-- Bilinen cheat DLL'leri
-- Şüpheli pencere başlıkları
+## Tarama Modülleri
 
-## 📝 Log Dosyası
+1. **Process Scanner** - Cheat engine, artmoney, debugger vs.
+2. **Module Scanner** - Inject edilmiş DLL'ler
+3. **Window Scanner** - Şüpheli pencere başlıkları
+4. **Registry Scanner** - Cheat yazılımı kayıtları
+5. **File Scanner** - Oyun klasöründeki şüpheli dosyalar
+6. **Memory Pattern Scanner** - Bellekteki cheat signature'ları
 
-`Half-Life/agtr_winmm.log`:
+## Log Dosyası
 
-```
-[12:34:56.789] AGTR Anti-Cheat v11.5 (winmm.dll)
-[12:34:56.790] HWID Generated: XXXXXXXX...
-[12:34:56.791] Scan thread started
-[12:35:26.800] Heartbeat sent - Frames: 1847, Speedhack: no
+`Half-Life/agtr_client.log` dosyasında detaylı loglar tutulur.
+
+## Şifreli String Değiştirme
+
+API IP/port değiştirmek için `agtr_winmm.cpp` dosyasındaki encrypt değerlerini güncelleyin:
+
+```python
+# Python ile yeni encrypt değerleri üretme
+key = [0xA7, 0x3F, 0x8C, 0x51, 0xD2, 0x6E, 0xB9, 0x04]
+
+def encrypt(text):
+    return [ord(c) ^ key[i % len(key)] for i, c in enumerate(text)]
+
+print(encrypt("YENİ_IP_ADRES"))
 ```
 
-## 🔗 İlgili Projeler
+## Lisans
 
-- [AGTR Discord Bot](link) - Oyuncu istatistikleri
-- [AGTR AMX Plugin](link) - Sunucu tarafı entegrasyon
-
-## 📄 Lisans
-
-Bu proje AGTR (Adrenaline Gamer Turkey) tarafından geliştirilmiştir.
-
-## 🤝 Katkıda Bulunma
-
-Pull request'ler kabul edilir. Büyük değişiklikler için önce issue açın.
+AGTR Private - Tüm hakları saklıdır.
