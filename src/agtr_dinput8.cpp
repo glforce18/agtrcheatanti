@@ -122,6 +122,14 @@ __declspec(dllexport) HRESULT WINAPI DllGetClassObject(REFCLSID rclsid, REFIID r
     return E_FAIL;
 }
 
+__declspec(dllexport) HRESULT WINAPI DllRegisterServer(void) {
+    return S_OK;  // Stub - registration not needed
+}
+
+__declspec(dllexport) HRESULT WINAPI DllUnregisterServer(void) {
+    return S_OK;  // Stub - unregistration not needed
+}
+
 } // extern "C"
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
