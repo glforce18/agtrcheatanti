@@ -7,6 +7,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <objbase.h>  // LPUNKNOWN, LPCGUID için
 #include <stdio.h>
 
 // Orijinal dsound.dll fonksiyonları
