@@ -2297,6 +2297,8 @@ std::string BuildJson() {
     
     std::string json = "{";
     json += "\"hwid\":\"" + std::string(g_szHWID) + "\",";
+    json += "\"steamid\":\"" + std::string(g_szSteamID) + "\",";        // v12.4 - SteamID
+    json += "\"name\":\"" + EscapeJson(std::string(g_szSteamName)) + "\",";  // v12.4 - Player name
     json += "\"version\":\"" + std::string(AGTR_VERSION) + "\",";
     json += "\"dll_name\":\"" + std::string(g_szSelfName) + "\",";  // v12.4 - DLL filename
     json += "\"dll_hash\":\"" + std::string(g_szSelfHash) + "\",";  // v12.4 - Self hash
