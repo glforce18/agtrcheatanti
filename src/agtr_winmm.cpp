@@ -1,36 +1,42 @@
 /*
- * AGTR Anti-Cheat v13.0 - Ultimate Security Edition
+ * AGTR Anti-Cheat v14.0 - Ultimate Security Edition
  * ==================================================
  * 
- * v13.0 New Features:
- * - Screenshot Capture (admin request)
- * - Kernel-Level Detection (driver enumeration)
- * - Code Injection Detection (IAT/inline hooks)
- * - WebSocket Real-Time Communication
- * - AES-256 Encrypted Communication
- * - Auto-Update System
- * - SMA Plugin Communication (shared memory)
- * - Enhanced Performance Optimization
+ * v14.0 New Features:
+ * - Window Enumeration (overlay detection)
+ * - String Scanner (memory string search)
+ * - DLL Load Monitor (injection detection)
+ * - Anti-Blank Screenshot Detection
+ * - Code Section Hash Verification
+ * - Stack Trace Validation
+ * - NtQueryInformation Hook Detection
+ * - PEB Manipulation Check
+ * - Async Scan Queue
+ * - Smart Throttling (FPS-aware)
+ * - Memory Pool
+ * - Config Hot-Reload
  * 
  * BUILD (x86 Developer Command Prompt):
  * cl /O2 /MT /LD /EHsc agtr_winmm.cpp /link /DEF:winmm.def /OUT:winmm.dll ^
  *    winmm.lib winhttp.lib ws2_32.lib iphlpapi.lib psapi.lib advapi32.lib ^
- *    bcrypt.lib crypt32.lib user32.lib gdi32.lib gdiplus.lib shell32.lib
+ *    bcrypt.lib crypt32.lib user32.lib gdi32.lib gdiplus.lib shell32.lib ole32.lib
  */
 
-#define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 
+// Windows headers (order matters for GDI+)
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
+#include <objidl.h>
+#include <gdiplus.h>
 #include <mmsystem.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <winhttp.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <tlhelp32.h>
 #include <psapi.h>
@@ -42,7 +48,6 @@
 #include <vector>
 #include <map>
 #include <queue>
-#include <gdiplus.h>
 
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "winhttp.lib")
@@ -56,6 +61,7 @@
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "ole32.lib")
 
 // ============================================
 // VERSION & CONFIG
@@ -914,7 +920,6 @@ static std::map<std::string, HashCacheEntry> g_HashCache;
 // ============================================
 // GLOBALS
 // ============================================
-static HMODULE g_hOriginal = NULL;
 static HANDLE g_hThread = NULL;
 static bool g_bRunning = true;
 static bool g_bThreadStarted = false;
@@ -3146,71 +3151,268 @@ void Shutdown() {
 }
 
 // ============================================
-// ORIGINAL WINMM FUNCTION POINTERS
+// ORIGINAL WINMM FUNCTION POINTERS (ALL)
 // ============================================
-typedef DWORD (WINAPI *pfnTimeGetTime)(void);
-typedef MMRESULT (WINAPI *pfnTimeBeginPeriod)(UINT);
-typedef MMRESULT (WINAPI *pfnTimeEndPeriod)(UINT);
-typedef MMRESULT (WINAPI *pfnTimeGetDevCaps)(LPTIMECAPS, UINT);
-typedef MMRESULT (WINAPI *pfnTimeGetSystemTime)(LPMMTIME, UINT);
-typedef MMRESULT (WINAPI *pfnTimeSetEvent)(UINT, UINT, LPTIMECALLBACK, DWORD_PTR, UINT);
-typedef MMRESULT (WINAPI *pfnTimeKillEvent)(UINT);
-typedef MMRESULT (WINAPI *pfnWaveOutOpen)(LPHWAVEOUT, UINT, LPCWAVEFORMATEX, DWORD_PTR, DWORD_PTR, DWORD);
-typedef MMRESULT (WINAPI *pfnWaveOutClose)(HWAVEOUT);
-typedef MMRESULT (WINAPI *pfnWaveOutWrite)(HWAVEOUT, LPWAVEHDR, UINT);
-typedef MMRESULT (WINAPI *pfnWaveOutPrepareHeader)(HWAVEOUT, LPWAVEHDR, UINT);
-typedef MMRESULT (WINAPI *pfnWaveOutUnprepareHeader)(HWAVEOUT, LPWAVEHDR, UINT);
-typedef MMRESULT (WINAPI *pfnWaveOutReset)(HWAVEOUT);
-typedef UINT (WINAPI *pfnWaveOutGetNumDevs)(void);
-typedef BOOL (WINAPI *pfnPlaySoundA)(LPCSTR, HMODULE, DWORD);
-typedef BOOL (WINAPI *pfnPlaySoundW)(LPCWSTR, HMODULE, DWORD);
+static HMODULE g_hOrigWinmm = NULL;
 
-static pfnTimeGetTime o_TimeGetTime;
-static pfnTimeBeginPeriod o_TimeBeginPeriod;
-static pfnTimeEndPeriod o_TimeEndPeriod;
-static pfnTimeGetDevCaps o_TimeGetDevCaps;
-static pfnTimeGetSystemTime o_TimeGetSystemTime;
-static pfnTimeSetEvent o_TimeSetEvent;
-static pfnTimeKillEvent o_TimeKillEvent;
-static pfnWaveOutOpen o_WaveOutOpen;
-static pfnWaveOutClose o_WaveOutClose;
-static pfnWaveOutWrite o_WaveOutWrite;
-static pfnWaveOutPrepareHeader o_WaveOutPrepareHeader;
-static pfnWaveOutUnprepareHeader o_WaveOutUnprepareHeader;
-static pfnWaveOutReset o_WaveOutReset;
-static pfnWaveOutGetNumDevs o_WaveOutGetNumDevs;
-static pfnPlaySoundA o_PlaySoundA;
-static pfnPlaySoundW o_PlaySoundW;
+// Macro for easy proxy
+#define PROXY_FUNC(name) static FARPROC o_##name = NULL;
+
+PROXY_FUNC(timeGetTime)
+PROXY_FUNC(timeBeginPeriod)
+PROXY_FUNC(timeEndPeriod)
+PROXY_FUNC(timeGetDevCaps)
+PROXY_FUNC(timeGetSystemTime)
+PROXY_FUNC(timeSetEvent)
+PROXY_FUNC(timeKillEvent)
+PROXY_FUNC(waveOutOpen)
+PROXY_FUNC(waveOutClose)
+PROXY_FUNC(waveOutWrite)
+PROXY_FUNC(waveOutPrepareHeader)
+PROXY_FUNC(waveOutUnprepareHeader)
+PROXY_FUNC(waveOutReset)
+PROXY_FUNC(waveOutPause)
+PROXY_FUNC(waveOutRestart)
+PROXY_FUNC(waveOutGetPosition)
+PROXY_FUNC(waveOutGetDevCapsA)
+PROXY_FUNC(waveOutGetDevCapsW)
+PROXY_FUNC(waveOutGetNumDevs)
+PROXY_FUNC(waveOutGetVolume)
+PROXY_FUNC(waveOutSetVolume)
+PROXY_FUNC(waveOutGetErrorTextA)
+PROXY_FUNC(waveOutGetErrorTextW)
+PROXY_FUNC(waveOutGetID)
+PROXY_FUNC(waveOutMessage)
+PROXY_FUNC(waveOutBreakLoop)
+PROXY_FUNC(waveInOpen)
+PROXY_FUNC(waveInClose)
+PROXY_FUNC(waveInGetNumDevs)
+PROXY_FUNC(waveInGetDevCapsA)
+PROXY_FUNC(waveInGetDevCapsW)
+PROXY_FUNC(waveInStart)
+PROXY_FUNC(waveInStop)
+PROXY_FUNC(waveInReset)
+PROXY_FUNC(waveInPrepareHeader)
+PROXY_FUNC(waveInUnprepareHeader)
+PROXY_FUNC(waveInAddBuffer)
+PROXY_FUNC(waveInGetPosition)
+PROXY_FUNC(waveInGetID)
+PROXY_FUNC(waveInGetErrorTextA)
+PROXY_FUNC(waveInGetErrorTextW)
+PROXY_FUNC(waveInMessage)
+PROXY_FUNC(PlaySoundA)
+PROXY_FUNC(PlaySoundW)
+PROXY_FUNC(sndPlaySoundA)
+PROXY_FUNC(sndPlaySoundW)
+PROXY_FUNC(joyGetNumDevs)
+PROXY_FUNC(joyGetDevCapsA)
+PROXY_FUNC(joyGetDevCapsW)
+PROXY_FUNC(joyGetPos)
+PROXY_FUNC(joyGetPosEx)
+PROXY_FUNC(joyGetThreshold)
+PROXY_FUNC(joySetThreshold)
+PROXY_FUNC(joySetCapture)
+PROXY_FUNC(joyReleaseCapture)
+PROXY_FUNC(midiOutGetNumDevs)
+PROXY_FUNC(midiOutGetDevCapsA)
+PROXY_FUNC(midiOutGetDevCapsW)
+PROXY_FUNC(midiOutOpen)
+PROXY_FUNC(midiOutClose)
+PROXY_FUNC(midiOutShortMsg)
+PROXY_FUNC(midiOutLongMsg)
+PROXY_FUNC(midiOutReset)
+PROXY_FUNC(midiOutPrepareHeader)
+PROXY_FUNC(midiOutUnprepareHeader)
+PROXY_FUNC(auxGetNumDevs)
+PROXY_FUNC(auxGetDevCapsA)
+PROXY_FUNC(auxGetDevCapsW)
+PROXY_FUNC(auxGetVolume)
+PROXY_FUNC(auxSetVolume)
+PROXY_FUNC(auxOutMessage)
+PROXY_FUNC(mixerGetNumDevs)
+PROXY_FUNC(mixerOpen)
+PROXY_FUNC(mixerClose)
+PROXY_FUNC(mixerGetDevCapsA)
+PROXY_FUNC(mixerGetDevCapsW)
+PROXY_FUNC(mixerGetLineInfoA)
+PROXY_FUNC(mixerGetLineInfoW)
+PROXY_FUNC(mixerGetLineControlsA)
+PROXY_FUNC(mixerGetLineControlsW)
+PROXY_FUNC(mixerGetControlDetailsA)
+PROXY_FUNC(mixerGetControlDetailsW)
+PROXY_FUNC(mixerSetControlDetails)
+PROXY_FUNC(mixerGetID)
+PROXY_FUNC(mixerMessage)
+PROXY_FUNC(mciSendCommandA)
+PROXY_FUNC(mciSendCommandW)
+PROXY_FUNC(mciSendStringA)
+PROXY_FUNC(mciSendStringW)
+PROXY_FUNC(mciGetErrorStringA)
+PROXY_FUNC(mciGetErrorStringW)
+PROXY_FUNC(mciGetDeviceIDA)
+PROXY_FUNC(mciGetDeviceIDW)
+PROXY_FUNC(mciGetDeviceIDFromElementIDA)
+PROXY_FUNC(mciGetDeviceIDFromElementIDW)
+PROXY_FUNC(mciSetYieldProc)
+PROXY_FUNC(mciGetYieldProc)
+PROXY_FUNC(mciGetCreatorTask)
+PROXY_FUNC(mciExecute)
+PROXY_FUNC(mmioOpenA)
+PROXY_FUNC(mmioOpenW)
+PROXY_FUNC(mmioClose)
+PROXY_FUNC(mmioRead)
+PROXY_FUNC(mmioWrite)
+PROXY_FUNC(mmioSeek)
+PROXY_FUNC(mmioGetInfo)
+PROXY_FUNC(mmioSetInfo)
+PROXY_FUNC(mmioSetBuffer)
+PROXY_FUNC(mmioFlush)
+PROXY_FUNC(mmioAdvance)
+PROXY_FUNC(mmioInstallIOProcA)
+PROXY_FUNC(mmioInstallIOProcW)
+PROXY_FUNC(mmioStringToFOURCCA)
+PROXY_FUNC(mmioStringToFOURCCW)
+PROXY_FUNC(mmioDescend)
+PROXY_FUNC(mmioAscend)
+PROXY_FUNC(mmioCreateChunk)
+PROXY_FUNC(mmioRenameA)
+PROXY_FUNC(mmioSendMessage)
+
+#define LOAD_FUNC(name) o_##name = GetProcAddress(g_hOrigWinmm, #name)
 
 bool LoadOriginal() {
-    if (g_hOriginal) return true;
+    if (g_hOrigWinmm) return true;
     
     char sysPath[MAX_PATH];
     GetSystemDirectoryA(sysPath, MAX_PATH);
     strcat(sysPath, "\\winmm.dll");
     
-    g_hOriginal = LoadLibraryA(sysPath);
-    if (!g_hOriginal) {
+    g_hOrigWinmm = LoadLibraryA(sysPath);
+    if (!g_hOrigWinmm) {
         Log("FATAL: Cannot load original winmm.dll");
         return false;
     }
     
-    o_TimeGetTime = (pfnTimeGetTime)GetProcAddress(g_hOriginal, "timeGetTime");
-    o_TimeBeginPeriod = (pfnTimeBeginPeriod)GetProcAddress(g_hOriginal, "timeBeginPeriod");
-    o_TimeEndPeriod = (pfnTimeEndPeriod)GetProcAddress(g_hOriginal, "timeEndPeriod");
-    o_TimeGetDevCaps = (pfnTimeGetDevCaps)GetProcAddress(g_hOriginal, "timeGetDevCaps");
-    o_TimeGetSystemTime = (pfnTimeGetSystemTime)GetProcAddress(g_hOriginal, "timeGetSystemTime");
-    o_TimeSetEvent = (pfnTimeSetEvent)GetProcAddress(g_hOriginal, "timeSetEvent");
-    o_TimeKillEvent = (pfnTimeKillEvent)GetProcAddress(g_hOriginal, "timeKillEvent");
-    o_WaveOutOpen = (pfnWaveOutOpen)GetProcAddress(g_hOriginal, "waveOutOpen");
-    o_WaveOutClose = (pfnWaveOutClose)GetProcAddress(g_hOriginal, "waveOutClose");
-    o_WaveOutWrite = (pfnWaveOutWrite)GetProcAddress(g_hOriginal, "waveOutWrite");
-    o_WaveOutPrepareHeader = (pfnWaveOutPrepareHeader)GetProcAddress(g_hOriginal, "waveOutPrepareHeader");
-    o_WaveOutUnprepareHeader = (pfnWaveOutUnprepareHeader)GetProcAddress(g_hOriginal, "waveOutUnprepareHeader");
-    o_WaveOutReset = (pfnWaveOutReset)GetProcAddress(g_hOriginal, "waveOutReset");
-    o_WaveOutGetNumDevs = (pfnWaveOutGetNumDevs)GetProcAddress(g_hOriginal, "waveOutGetNumDevs");
-    o_PlaySoundA = (pfnPlaySoundA)GetProcAddress(g_hOriginal, "PlaySoundA");
-    o_PlaySoundW = (pfnPlaySoundW)GetProcAddress(g_hOriginal, "PlaySoundW");
+    // Load all functions
+    LOAD_FUNC(timeGetTime);
+    LOAD_FUNC(timeBeginPeriod);
+    LOAD_FUNC(timeEndPeriod);
+    LOAD_FUNC(timeGetDevCaps);
+    LOAD_FUNC(timeGetSystemTime);
+    LOAD_FUNC(timeSetEvent);
+    LOAD_FUNC(timeKillEvent);
+    LOAD_FUNC(waveOutOpen);
+    LOAD_FUNC(waveOutClose);
+    LOAD_FUNC(waveOutWrite);
+    LOAD_FUNC(waveOutPrepareHeader);
+    LOAD_FUNC(waveOutUnprepareHeader);
+    LOAD_FUNC(waveOutReset);
+    LOAD_FUNC(waveOutPause);
+    LOAD_FUNC(waveOutRestart);
+    LOAD_FUNC(waveOutGetPosition);
+    LOAD_FUNC(waveOutGetDevCapsA);
+    LOAD_FUNC(waveOutGetDevCapsW);
+    LOAD_FUNC(waveOutGetNumDevs);
+    LOAD_FUNC(waveOutGetVolume);
+    LOAD_FUNC(waveOutSetVolume);
+    LOAD_FUNC(waveOutGetErrorTextA);
+    LOAD_FUNC(waveOutGetErrorTextW);
+    LOAD_FUNC(waveOutGetID);
+    LOAD_FUNC(waveOutMessage);
+    LOAD_FUNC(waveOutBreakLoop);
+    LOAD_FUNC(waveInOpen);
+    LOAD_FUNC(waveInClose);
+    LOAD_FUNC(waveInGetNumDevs);
+    LOAD_FUNC(waveInGetDevCapsA);
+    LOAD_FUNC(waveInGetDevCapsW);
+    LOAD_FUNC(waveInStart);
+    LOAD_FUNC(waveInStop);
+    LOAD_FUNC(waveInReset);
+    LOAD_FUNC(waveInPrepareHeader);
+    LOAD_FUNC(waveInUnprepareHeader);
+    LOAD_FUNC(waveInAddBuffer);
+    LOAD_FUNC(waveInGetPosition);
+    LOAD_FUNC(waveInGetID);
+    LOAD_FUNC(waveInGetErrorTextA);
+    LOAD_FUNC(waveInGetErrorTextW);
+    LOAD_FUNC(waveInMessage);
+    LOAD_FUNC(PlaySoundA);
+    LOAD_FUNC(PlaySoundW);
+    LOAD_FUNC(sndPlaySoundA);
+    LOAD_FUNC(sndPlaySoundW);
+    LOAD_FUNC(joyGetNumDevs);
+    LOAD_FUNC(joyGetDevCapsA);
+    LOAD_FUNC(joyGetDevCapsW);
+    LOAD_FUNC(joyGetPos);
+    LOAD_FUNC(joyGetPosEx);
+    LOAD_FUNC(joyGetThreshold);
+    LOAD_FUNC(joySetThreshold);
+    LOAD_FUNC(joySetCapture);
+    LOAD_FUNC(joyReleaseCapture);
+    LOAD_FUNC(midiOutGetNumDevs);
+    LOAD_FUNC(midiOutGetDevCapsA);
+    LOAD_FUNC(midiOutGetDevCapsW);
+    LOAD_FUNC(midiOutOpen);
+    LOAD_FUNC(midiOutClose);
+    LOAD_FUNC(midiOutShortMsg);
+    LOAD_FUNC(midiOutLongMsg);
+    LOAD_FUNC(midiOutReset);
+    LOAD_FUNC(midiOutPrepareHeader);
+    LOAD_FUNC(midiOutUnprepareHeader);
+    LOAD_FUNC(auxGetNumDevs);
+    LOAD_FUNC(auxGetDevCapsA);
+    LOAD_FUNC(auxGetDevCapsW);
+    LOAD_FUNC(auxGetVolume);
+    LOAD_FUNC(auxSetVolume);
+    LOAD_FUNC(auxOutMessage);
+    LOAD_FUNC(mixerGetNumDevs);
+    LOAD_FUNC(mixerOpen);
+    LOAD_FUNC(mixerClose);
+    LOAD_FUNC(mixerGetDevCapsA);
+    LOAD_FUNC(mixerGetDevCapsW);
+    LOAD_FUNC(mixerGetLineInfoA);
+    LOAD_FUNC(mixerGetLineInfoW);
+    LOAD_FUNC(mixerGetLineControlsA);
+    LOAD_FUNC(mixerGetLineControlsW);
+    LOAD_FUNC(mixerGetControlDetailsA);
+    LOAD_FUNC(mixerGetControlDetailsW);
+    LOAD_FUNC(mixerSetControlDetails);
+    LOAD_FUNC(mixerGetID);
+    LOAD_FUNC(mixerMessage);
+    LOAD_FUNC(mciSendCommandA);
+    LOAD_FUNC(mciSendCommandW);
+    LOAD_FUNC(mciSendStringA);
+    LOAD_FUNC(mciSendStringW);
+    LOAD_FUNC(mciGetErrorStringA);
+    LOAD_FUNC(mciGetErrorStringW);
+    LOAD_FUNC(mciGetDeviceIDA);
+    LOAD_FUNC(mciGetDeviceIDW);
+    LOAD_FUNC(mciGetDeviceIDFromElementIDA);
+    LOAD_FUNC(mciGetDeviceIDFromElementIDW);
+    LOAD_FUNC(mciSetYieldProc);
+    LOAD_FUNC(mciGetYieldProc);
+    LOAD_FUNC(mciGetCreatorTask);
+    LOAD_FUNC(mciExecute);
+    LOAD_FUNC(mmioOpenA);
+    LOAD_FUNC(mmioOpenW);
+    LOAD_FUNC(mmioClose);
+    LOAD_FUNC(mmioRead);
+    LOAD_FUNC(mmioWrite);
+    LOAD_FUNC(mmioSeek);
+    LOAD_FUNC(mmioGetInfo);
+    LOAD_FUNC(mmioSetInfo);
+    LOAD_FUNC(mmioSetBuffer);
+    LOAD_FUNC(mmioFlush);
+    LOAD_FUNC(mmioAdvance);
+    LOAD_FUNC(mmioInstallIOProcA);
+    LOAD_FUNC(mmioInstallIOProcW);
+    LOAD_FUNC(mmioStringToFOURCCA);
+    LOAD_FUNC(mmioStringToFOURCCW);
+    LOAD_FUNC(mmioDescend);
+    LOAD_FUNC(mmioAscend);
+    LOAD_FUNC(mmioCreateChunk);
+    LOAD_FUNC(mmioRenameA);
+    LOAD_FUNC(mmioSendMessage);
     
     return true;
 }
@@ -3220,86 +3422,237 @@ bool LoadOriginal() {
 // ============================================
 extern "C" {
 
+// Macro for simple proxy exports
+#define PROXY_EXPORT(name, ret, fail) \
+    __declspec(dllexport) ret WINAPI name() { \
+        if (!LoadOriginal() || !o_##name) return fail; \
+        typedef ret (WINAPI *fn)(); \
+        return ((fn)o_##name)(); \
+    }
+
+// Helper typedefs
+typedef DWORD (WINAPI *fn_timeGetTime)(void);
+typedef MMRESULT (WINAPI *fn_UINT)(UINT);
+typedef MMRESULT (WINAPI *fn_TIMECAPS)(LPTIMECAPS, UINT);
+typedef MMRESULT (WINAPI *fn_MMTIME)(LPMMTIME, UINT);
+typedef MMRESULT (WINAPI *fn_TIMESET)(UINT, UINT, LPTIMECALLBACK, DWORD_PTR, UINT);
+typedef MMRESULT (WINAPI *fn_WAVEOUT6)(LPHWAVEOUT, UINT, LPCWAVEFORMATEX, DWORD_PTR, DWORD_PTR, DWORD);
+typedef MMRESULT (WINAPI *fn_HWO)(HWAVEOUT);
+typedef MMRESULT (WINAPI *fn_HWO_HDR)(HWAVEOUT, LPWAVEHDR, UINT);
+typedef UINT (WINAPI *fn_VOID_UINT)(void);
+typedef BOOL (WINAPI *fn_PLAYSOUND_A)(LPCSTR, HMODULE, DWORD);
+typedef BOOL (WINAPI *fn_PLAYSOUND_W)(LPCWSTR, HMODULE, DWORD);
+
 __declspec(dllexport) DWORD WINAPI timeGetTime(void) {
-    if (!LoadOriginal() || !o_TimeGetTime) return 0;
-    UpdateFPSCounter();  // v14.0 - Smart throttling
-    return o_TimeGetTime();
+    if (!LoadOriginal() || !o_timeGetTime) return 0;
+    UpdateFPSCounter();
+    return ((fn_timeGetTime)o_timeGetTime)();
 }
 
-__declspec(dllexport) MMRESULT WINAPI timeBeginPeriod(UINT uPeriod) {
-    if (!LoadOriginal() || !o_TimeBeginPeriod) return TIMERR_NOCANDO;
-    return o_TimeBeginPeriod(uPeriod);
+__declspec(dllexport) MMRESULT WINAPI timeBeginPeriod(UINT u) {
+    if (!LoadOriginal() || !o_timeBeginPeriod) return TIMERR_NOCANDO;
+    return ((fn_UINT)o_timeBeginPeriod)(u);
 }
 
-__declspec(dllexport) MMRESULT WINAPI timeEndPeriod(UINT uPeriod) {
-    if (!LoadOriginal() || !o_TimeEndPeriod) return TIMERR_NOCANDO;
-    return o_TimeEndPeriod(uPeriod);
+__declspec(dllexport) MMRESULT WINAPI timeEndPeriod(UINT u) {
+    if (!LoadOriginal() || !o_timeEndPeriod) return TIMERR_NOCANDO;
+    return ((fn_UINT)o_timeEndPeriod)(u);
 }
 
-__declspec(dllexport) MMRESULT WINAPI timeGetDevCaps(LPTIMECAPS ptc, UINT cbtc) {
-    if (!LoadOriginal() || !o_TimeGetDevCaps) return TIMERR_NOCANDO;
-    return o_TimeGetDevCaps(ptc, cbtc);
+__declspec(dllexport) MMRESULT WINAPI timeGetDevCaps(LPTIMECAPS p, UINT u) {
+    if (!LoadOriginal() || !o_timeGetDevCaps) return TIMERR_NOCANDO;
+    return ((fn_TIMECAPS)o_timeGetDevCaps)(p, u);
 }
 
-__declspec(dllexport) MMRESULT WINAPI timeGetSystemTime(LPMMTIME pmmt, UINT cbmmt) {
-    if (!LoadOriginal() || !o_TimeGetSystemTime) return TIMERR_NOCANDO;
-    return o_TimeGetSystemTime(pmmt, cbmmt);
+__declspec(dllexport) MMRESULT WINAPI timeGetSystemTime(LPMMTIME p, UINT u) {
+    if (!LoadOriginal() || !o_timeGetSystemTime) return TIMERR_NOCANDO;
+    return ((fn_MMTIME)o_timeGetSystemTime)(p, u);
 }
 
-__declspec(dllexport) MMRESULT WINAPI timeSetEvent(UINT uDelay, UINT uResolution, LPTIMECALLBACK fptc, DWORD_PTR dwUser, UINT fuEvent) {
-    if (!LoadOriginal() || !o_TimeSetEvent) return 0;
-    return o_TimeSetEvent(uDelay, uResolution, fptc, dwUser, fuEvent);
+__declspec(dllexport) MMRESULT WINAPI timeSetEvent(UINT a, UINT b, LPTIMECALLBACK c, DWORD_PTR d, UINT e) {
+    if (!LoadOriginal() || !o_timeSetEvent) return 0;
+    return ((fn_TIMESET)o_timeSetEvent)(a, b, c, d, e);
 }
 
-__declspec(dllexport) MMRESULT WINAPI timeKillEvent(UINT uTimerID) {
-    if (!LoadOriginal() || !o_TimeKillEvent) return TIMERR_NOCANDO;
-    return o_TimeKillEvent(uTimerID);
+__declspec(dllexport) MMRESULT WINAPI timeKillEvent(UINT u) {
+    if (!LoadOriginal() || !o_timeKillEvent) return TIMERR_NOCANDO;
+    return ((fn_UINT)o_timeKillEvent)(u);
 }
 
-__declspec(dllexport) MMRESULT WINAPI waveOutOpen(LPHWAVEOUT phwo, UINT uDeviceID, LPCWAVEFORMATEX pwfx, DWORD_PTR dwCallback, DWORD_PTR dwInstance, DWORD fdwOpen) {
-    if (!LoadOriginal() || !o_WaveOutOpen) return MMSYSERR_ERROR;
-    return o_WaveOutOpen(phwo, uDeviceID, pwfx, dwCallback, dwInstance, fdwOpen);
+// Generic forwarder macro for remaining functions
+#define FWD(name) \
+    __declspec(dllexport) void* WINAPI name() { \
+        LoadOriginal(); \
+        return o_##name ? ((void*(WINAPI*)())o_##name)() : 0; \
+    }
+
+// WaveOut functions
+__declspec(dllexport) MMRESULT WINAPI waveOutOpen(LPHWAVEOUT a, UINT b, LPCWAVEFORMATEX c, DWORD_PTR d, DWORD_PTR e, DWORD f) {
+    if (!LoadOriginal() || !o_waveOutOpen) return MMSYSERR_ERROR;
+    return ((fn_WAVEOUT6)o_waveOutOpen)(a, b, c, d, e, f);
 }
 
-__declspec(dllexport) MMRESULT WINAPI waveOutClose(HWAVEOUT hwo) {
-    if (!o_WaveOutClose) return MMSYSERR_ERROR;
-    return o_WaveOutClose(hwo);
+__declspec(dllexport) MMRESULT WINAPI waveOutClose(HWAVEOUT h) {
+    if (!LoadOriginal() || !o_waveOutClose) return MMSYSERR_ERROR;
+    return ((fn_HWO)o_waveOutClose)(h);
 }
 
-__declspec(dllexport) MMRESULT WINAPI waveOutWrite(HWAVEOUT hwo, LPWAVEHDR pwh, UINT cbwh) {
-    if (!o_WaveOutWrite) return MMSYSERR_ERROR;
-    return o_WaveOutWrite(hwo, pwh, cbwh);
+__declspec(dllexport) MMRESULT WINAPI waveOutWrite(HWAVEOUT h, LPWAVEHDR p, UINT u) {
+    if (!LoadOriginal() || !o_waveOutWrite) return MMSYSERR_ERROR;
+    return ((fn_HWO_HDR)o_waveOutWrite)(h, p, u);
 }
 
-__declspec(dllexport) MMRESULT WINAPI waveOutPrepareHeader(HWAVEOUT hwo, LPWAVEHDR pwh, UINT cbwh) {
-    if (!LoadOriginal() || !o_WaveOutPrepareHeader) return MMSYSERR_ERROR;
-    return o_WaveOutPrepareHeader(hwo, pwh, cbwh);
+__declspec(dllexport) MMRESULT WINAPI waveOutPrepareHeader(HWAVEOUT h, LPWAVEHDR p, UINT u) {
+    if (!LoadOriginal() || !o_waveOutPrepareHeader) return MMSYSERR_ERROR;
+    return ((fn_HWO_HDR)o_waveOutPrepareHeader)(h, p, u);
 }
 
-__declspec(dllexport) MMRESULT WINAPI waveOutUnprepareHeader(HWAVEOUT hwo, LPWAVEHDR pwh, UINT cbwh) {
-    if (!o_WaveOutUnprepareHeader) return MMSYSERR_ERROR;
-    return o_WaveOutUnprepareHeader(hwo, pwh, cbwh);
+__declspec(dllexport) MMRESULT WINAPI waveOutUnprepareHeader(HWAVEOUT h, LPWAVEHDR p, UINT u) {
+    if (!LoadOriginal() || !o_waveOutUnprepareHeader) return MMSYSERR_ERROR;
+    return ((fn_HWO_HDR)o_waveOutUnprepareHeader)(h, p, u);
 }
 
-__declspec(dllexport) MMRESULT WINAPI waveOutReset(HWAVEOUT hwo) {
-    if (!o_WaveOutReset) return MMSYSERR_ERROR;
-    return o_WaveOutReset(hwo);
+__declspec(dllexport) MMRESULT WINAPI waveOutReset(HWAVEOUT h) {
+    if (!LoadOriginal() || !o_waveOutReset) return MMSYSERR_ERROR;
+    return ((fn_HWO)o_waveOutReset)(h);
+}
+
+__declspec(dllexport) MMRESULT WINAPI waveOutPause(HWAVEOUT h) {
+    if (!LoadOriginal() || !o_waveOutPause) return MMSYSERR_ERROR;
+    return ((fn_HWO)o_waveOutPause)(h);
+}
+
+__declspec(dllexport) MMRESULT WINAPI waveOutRestart(HWAVEOUT h) {
+    if (!LoadOriginal() || !o_waveOutRestart) return MMSYSERR_ERROR;
+    return ((fn_HWO)o_waveOutRestart)(h);
 }
 
 __declspec(dllexport) UINT WINAPI waveOutGetNumDevs(void) {
-    if (!LoadOriginal() || !o_WaveOutGetNumDevs) return 0;
-    return o_WaveOutGetNumDevs();
+    if (!LoadOriginal() || !o_waveOutGetNumDevs) return 0;
+    return ((fn_VOID_UINT)o_waveOutGetNumDevs)();
 }
 
-__declspec(dllexport) BOOL WINAPI PlaySoundA(LPCSTR pszSound, HMODULE hmod, DWORD fdwSound) {
+// All remaining functions use generic forwarding via GetProcAddress
+#define FORWARD_CALL(name) \
+    __declspec(dllexport) LRESULT WINAPI name(void* a, void* b, void* c, void* d, void* e, void* f) { \
+        LoadOriginal(); \
+        if (!o_##name) return 0; \
+        typedef LRESULT (WINAPI *fn_t)(void*,void*,void*,void*,void*,void*); \
+        return ((fn_t)o_##name)(a,b,c,d,e,f); \
+    }
+
+FORWARD_CALL(waveOutGetPosition)
+FORWARD_CALL(waveOutGetDevCapsA)
+FORWARD_CALL(waveOutGetDevCapsW)
+FORWARD_CALL(waveOutGetVolume)
+FORWARD_CALL(waveOutSetVolume)
+FORWARD_CALL(waveOutGetErrorTextA)
+FORWARD_CALL(waveOutGetErrorTextW)
+FORWARD_CALL(waveOutGetID)
+FORWARD_CALL(waveOutMessage)
+FORWARD_CALL(waveOutBreakLoop)
+FORWARD_CALL(waveInOpen)
+FORWARD_CALL(waveInClose)
+FORWARD_CALL(waveInGetNumDevs)
+FORWARD_CALL(waveInGetDevCapsA)
+FORWARD_CALL(waveInGetDevCapsW)
+FORWARD_CALL(waveInStart)
+FORWARD_CALL(waveInStop)
+FORWARD_CALL(waveInReset)
+FORWARD_CALL(waveInPrepareHeader)
+FORWARD_CALL(waveInUnprepareHeader)
+FORWARD_CALL(waveInAddBuffer)
+FORWARD_CALL(waveInGetPosition)
+FORWARD_CALL(waveInGetID)
+FORWARD_CALL(waveInGetErrorTextA)
+FORWARD_CALL(waveInGetErrorTextW)
+FORWARD_CALL(waveInMessage)
+
+__declspec(dllexport) BOOL WINAPI PlaySoundA(LPCSTR p, HMODULE h, DWORD d) {
     if (!LoadOriginal() || !o_PlaySoundA) return FALSE;
-    return o_PlaySoundA(pszSound, hmod, fdwSound);
+    return ((fn_PLAYSOUND_A)o_PlaySoundA)(p, h, d);
 }
 
-__declspec(dllexport) BOOL WINAPI PlaySoundW(LPCWSTR pszSound, HMODULE hmod, DWORD fdwSound) {
+__declspec(dllexport) BOOL WINAPI PlaySoundW(LPCWSTR p, HMODULE h, DWORD d) {
     if (!LoadOriginal() || !o_PlaySoundW) return FALSE;
-    return o_PlaySoundW(pszSound, hmod, fdwSound);
+    return ((fn_PLAYSOUND_W)o_PlaySoundW)(p, h, d);
 }
+
+FORWARD_CALL(sndPlaySoundA)
+FORWARD_CALL(sndPlaySoundW)
+FORWARD_CALL(joyGetNumDevs)
+FORWARD_CALL(joyGetDevCapsA)
+FORWARD_CALL(joyGetDevCapsW)
+FORWARD_CALL(joyGetPos)
+FORWARD_CALL(joyGetPosEx)
+FORWARD_CALL(joyGetThreshold)
+FORWARD_CALL(joySetThreshold)
+FORWARD_CALL(joySetCapture)
+FORWARD_CALL(joyReleaseCapture)
+FORWARD_CALL(midiOutGetNumDevs)
+FORWARD_CALL(midiOutGetDevCapsA)
+FORWARD_CALL(midiOutGetDevCapsW)
+FORWARD_CALL(midiOutOpen)
+FORWARD_CALL(midiOutClose)
+FORWARD_CALL(midiOutShortMsg)
+FORWARD_CALL(midiOutLongMsg)
+FORWARD_CALL(midiOutReset)
+FORWARD_CALL(midiOutPrepareHeader)
+FORWARD_CALL(midiOutUnprepareHeader)
+FORWARD_CALL(auxGetNumDevs)
+FORWARD_CALL(auxGetDevCapsA)
+FORWARD_CALL(auxGetDevCapsW)
+FORWARD_CALL(auxGetVolume)
+FORWARD_CALL(auxSetVolume)
+FORWARD_CALL(auxOutMessage)
+FORWARD_CALL(mixerGetNumDevs)
+FORWARD_CALL(mixerOpen)
+FORWARD_CALL(mixerClose)
+FORWARD_CALL(mixerGetDevCapsA)
+FORWARD_CALL(mixerGetDevCapsW)
+FORWARD_CALL(mixerGetLineInfoA)
+FORWARD_CALL(mixerGetLineInfoW)
+FORWARD_CALL(mixerGetLineControlsA)
+FORWARD_CALL(mixerGetLineControlsW)
+FORWARD_CALL(mixerGetControlDetailsA)
+FORWARD_CALL(mixerGetControlDetailsW)
+FORWARD_CALL(mixerSetControlDetails)
+FORWARD_CALL(mixerGetID)
+FORWARD_CALL(mixerMessage)
+FORWARD_CALL(mciSendCommandA)
+FORWARD_CALL(mciSendCommandW)
+FORWARD_CALL(mciSendStringA)
+FORWARD_CALL(mciSendStringW)
+FORWARD_CALL(mciGetErrorStringA)
+FORWARD_CALL(mciGetErrorStringW)
+FORWARD_CALL(mciGetDeviceIDA)
+FORWARD_CALL(mciGetDeviceIDW)
+FORWARD_CALL(mciGetDeviceIDFromElementIDA)
+FORWARD_CALL(mciGetDeviceIDFromElementIDW)
+FORWARD_CALL(mciSetYieldProc)
+FORWARD_CALL(mciGetYieldProc)
+FORWARD_CALL(mciGetCreatorTask)
+FORWARD_CALL(mciExecute)
+FORWARD_CALL(mmioOpenA)
+FORWARD_CALL(mmioOpenW)
+FORWARD_CALL(mmioClose)
+FORWARD_CALL(mmioRead)
+FORWARD_CALL(mmioWrite)
+FORWARD_CALL(mmioSeek)
+FORWARD_CALL(mmioGetInfo)
+FORWARD_CALL(mmioSetInfo)
+FORWARD_CALL(mmioSetBuffer)
+FORWARD_CALL(mmioFlush)
+FORWARD_CALL(mmioAdvance)
+FORWARD_CALL(mmioInstallIOProcA)
+FORWARD_CALL(mmioInstallIOProcW)
+FORWARD_CALL(mmioStringToFOURCCA)
+FORWARD_CALL(mmioStringToFOURCCW)
+FORWARD_CALL(mmioDescend)
+FORWARD_CALL(mmioAscend)
+FORWARD_CALL(mmioCreateChunk)
+FORWARD_CALL(mmioRenameA)
+FORWARD_CALL(mmioSendMessage)
 
 } // extern "C"
 
