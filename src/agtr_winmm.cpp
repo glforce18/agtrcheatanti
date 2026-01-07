@@ -41,6 +41,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <queue>
 #include <gdiplus.h>
 
 #pragma comment(lib, "winmm.lib")
@@ -59,8 +60,29 @@
 // ============================================
 // VERSION & CONFIG
 // ============================================
-#define AGTR_VERSION "13.0"
+#define AGTR_VERSION "14.0"
 #define AGTR_HASH_LENGTH 8  // ReChecker uyumlu 8 karakter MD5
+
+// v14.0 Feature Flags
+#define WINDOW_ENUM_ENABLED true
+#define STRING_SCANNER_ENABLED true
+#define DLL_MONITOR_ENABLED true
+#define ANTI_BLANK_ENABLED true
+#define CODE_HASH_ENABLED true
+#define STACK_TRACE_ENABLED true
+#define NTQUERY_HOOK_ENABLED true
+#define PEB_CHECK_ENABLED true
+#define ASYNC_SCAN_ENABLED true
+#define SMART_THROTTLE_ENABLED true
+#define MEMORY_POOL_ENABLED true
+#define HOT_RELOAD_ENABLED true
+
+// v14.0 Config
+#define SCAN_QUEUE_MAX 32
+#define LOW_FPS_THRESHOLD 30
+#define CONFIG_CHECK_INTERVAL 30000
+#define POOL_BLOCK_SIZE 4096
+#define POOL_MAX_BLOCKS 64
 
 // Heartbeat intervals (milliseconds)
 #define HEARTBEAT_IN_SERVER 30000      // Serverdeyken 30sn
@@ -91,7 +113,7 @@
 #define DLL_HASH_ENABLED true
 
 // SMA Communication
-#define SMA_SHARED_MEM_NAME "AGTR_SHARED_v13"
+#define SMA_SHARED_MEM_NAME "AGTR_SHARED_v14"
 #define SMA_SHARED_MEM_SIZE 4096
 #define SMA_HEARTBEAT_INTERVAL 5000    // 5 saniyede bir SMA'ya durum bildir
 
@@ -204,6 +226,452 @@ static void EnsureStringsDecrypted() {
     DecryptStringW(ENC_USER_AGENT, ENC_USER_AGENT_LEN, g_szUserAgent);
     DecryptString(ENC_SIG_KEY, ENC_SIG_KEY_LEN, g_szSignatureKey);
     g_bStringsDecrypted = true;
+}
+
+// ============================================
+// v14.0 - MEMORY POOL
+// ============================================
+struct MemoryPool {
+    BYTE* blocks[POOL_MAX_BLOCKS];
+    bool used[POOL_MAX_BLOCKS];
+    CRITICAL_SECTION cs;
+    int totalBlocks;
+    
+    void Init() {
+        InitializeCriticalSection(&cs);
+        totalBlocks = 0;
+        memset(blocks, 0, sizeof(blocks));
+        memset(used, 0, sizeof(used));
+        for (int i = 0; i < 16; i++) {
+            blocks[i] = (BYTE*)VirtualAlloc(NULL, POOL_BLOCK_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            if (blocks[i]) totalBlocks++;
+        }
+    }
+    
+    void* Alloc(size_t size) {
+        if (size > POOL_BLOCK_SIZE) return malloc(size);
+        EnterCriticalSection(&cs);
+        for (int i = 0; i < totalBlocks; i++) {
+            if (!used[i] && blocks[i]) {
+                used[i] = true;
+                LeaveCriticalSection(&cs);
+                return blocks[i];
+            }
+        }
+        LeaveCriticalSection(&cs);
+        return malloc(size);
+    }
+    
+    void Free(void* ptr) {
+        if (!ptr) return;
+        EnterCriticalSection(&cs);
+        for (int i = 0; i < totalBlocks; i++) {
+            if (blocks[i] == ptr) {
+                used[i] = false;
+                memset(blocks[i], 0, POOL_BLOCK_SIZE);
+                LeaveCriticalSection(&cs);
+                return;
+            }
+        }
+        LeaveCriticalSection(&cs);
+        free(ptr);
+    }
+    
+    void Cleanup() {
+        EnterCriticalSection(&cs);
+        for (int i = 0; i < totalBlocks; i++) {
+            if (blocks[i]) { VirtualFree(blocks[i], 0, MEM_RELEASE); blocks[i] = NULL; }
+        }
+        LeaveCriticalSection(&cs);
+        DeleteCriticalSection(&cs);
+    }
+};
+static MemoryPool g_MemPool;
+#define POOL_ALLOC(size) (MEMORY_POOL_ENABLED ? g_MemPool.Alloc(size) : malloc(size))
+#define POOL_FREE(ptr) (MEMORY_POOL_ENABLED ? g_MemPool.Free(ptr) : free(ptr))
+
+// ============================================
+// v14.0 - SMART THROTTLING
+// ============================================
+static int g_iCurrentFPS = 60;
+static int g_iFrameCount = 0;
+static DWORD g_dwFrameStartTime = 0;
+static bool g_bLowFPSMode = false;
+
+void UpdateFPSCounter() {
+    if (!SMART_THROTTLE_ENABLED) return;
+    g_iFrameCount++;
+    DWORD now = GetTickCount();
+    if (now - g_dwFrameStartTime >= 1000) {
+        g_iCurrentFPS = g_iFrameCount;
+        g_iFrameCount = 0;
+        g_dwFrameStartTime = now;
+        g_bLowFPSMode = (g_iCurrentFPS < LOW_FPS_THRESHOLD);
+    }
+}
+
+bool ShouldSkipHeavyScan() { return SMART_THROTTLE_ENABLED && g_iCurrentFPS < 15; }
+
+// ============================================
+// v14.0 - ASYNC SCAN QUEUE
+// ============================================
+enum ScanTaskType { SCAN_WINDOWS_V14=1, SCAN_STRINGS, SCAN_DLL_MON, SCAN_CODE_HASH, SCAN_STACK, SCAN_PEB_CHK };
+struct ScanTask { ScanTaskType type; DWORD timestamp; };
+static std::queue<ScanTask> g_ScanQueue;
+static CRITICAL_SECTION g_csScanQueue;
+static bool g_bAsyncInitialized = false;
+
+void InitAsyncScan() {
+    if (g_bAsyncInitialized) return;
+    InitializeCriticalSection(&g_csScanQueue);
+    g_bAsyncInitialized = true;
+}
+
+void QueueScan(ScanTaskType type) {
+    if (!ASYNC_SCAN_ENABLED || !g_bAsyncInitialized) return;
+    EnterCriticalSection(&g_csScanQueue);
+    if (g_ScanQueue.size() < SCAN_QUEUE_MAX) {
+        ScanTask t; t.type = type; t.timestamp = GetTickCount();
+        g_ScanQueue.push(t);
+    }
+    LeaveCriticalSection(&g_csScanQueue);
+}
+
+// ============================================
+// v14.0 - ENHANCED WINDOW ENUMERATION
+// ============================================
+static int g_iOverlayCount = 0;
+static int g_iSuspiciousWindowCount = 0;
+
+const char* g_WindowBlacklist[] = {
+    "aimbot", "wallhack", "esp", "cheat", "hack", "triggerbot", "norecoil", "bhop",
+    "speedhack", "cheat engine", "artmoney", "process hacker", "x64dbg", "ollydbg",
+    "injector", "inject", "loader", "overlay", "imgui", "external", "radar", NULL
+};
+
+BOOL CALLBACK EnumWindowsCallback_v14(HWND hwnd, LPARAM lParam) {
+    if (!IsWindowVisible(hwnd)) return TRUE;
+    char title[256] = {0}, className[128] = {0};
+    GetWindowTextA(hwnd, title, 255);
+    GetClassNameA(hwnd, className, 127);
+    if (!title[0] && !className[0]) return TRUE;
+    
+    DWORD exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+    bool isTopmost = (exStyle & WS_EX_TOPMOST) != 0;
+    bool isLayered = (exStyle & WS_EX_LAYERED) != 0;
+    bool isTransparent = (exStyle & WS_EX_TRANSPARENT) != 0;
+    
+    // Overlay detection
+    if (isTopmost && isLayered && isTransparent) {
+        g_iOverlayCount++;
+        Log("[WINDOW] Overlay: '%s' [%s]", title, className);
+    }
+    
+    // Blacklist check
+    char titleLower[256];
+    strcpy(titleLower, title);
+    for (char* p = titleLower; *p; p++) *p = tolower(*p);
+    
+    for (int i = 0; g_WindowBlacklist[i]; i++) {
+        if (strstr(titleLower, g_WindowBlacklist[i])) {
+            g_iSuspiciousWindowCount++;
+            Log("[WINDOW] Suspicious: '%s' matched '%s'", title, g_WindowBlacklist[i]);
+            break;
+        }
+    }
+    return TRUE;
+}
+
+int ScanWindows_v14() {
+    if (!WINDOW_ENUM_ENABLED) return 0;
+    g_iOverlayCount = 0;
+    g_iSuspiciousWindowCount = 0;
+    EnumWindows(EnumWindowsCallback_v14, 0);
+    return g_iSuspiciousWindowCount + g_iOverlayCount;
+}
+
+// ============================================
+// v14.0 - STRING SCANNER
+// ============================================
+const char* g_SuspiciousStrings[] = {
+    "aimbot", "aim_bot", "wallhack", "esp_draw", "esp_box", "triggerbot",
+    "norecoil", "no_recoil", "bhop", "speedhack", "godmode", "cheat_enable",
+    "imgui::begin", "d3d9_hook", "opengl_hook", "present_hook", NULL
+};
+
+int ScanMemoryStrings() {
+    if (!STRING_SCANNER_ENABLED) return 0;
+    int found = 0;
+    HANDLE hProc = GetCurrentProcess();
+    MEMORY_BASIC_INFORMATION mbi;
+    BYTE* addr = 0;
+    
+    while (VirtualQueryEx(hProc, addr, &mbi, sizeof(mbi))) {
+        if (mbi.State == MEM_COMMIT && mbi.RegionSize <= 2*1024*1024 &&
+            (mbi.Protect == PAGE_READWRITE || mbi.Protect == PAGE_EXECUTE_READWRITE)) {
+            BYTE* buf = (BYTE*)POOL_ALLOC(mbi.RegionSize);
+            if (buf) {
+                SIZE_T bytesRead;
+                if (ReadProcessMemory(hProc, mbi.BaseAddress, buf, mbi.RegionSize, &bytesRead)) {
+                    for (int i = 0; g_SuspiciousStrings[i]; i++) {
+                        const char* needle = g_SuspiciousStrings[i];
+                        size_t nLen = strlen(needle);
+                        for (size_t j = 0; j + nLen <= bytesRead; j++) {
+                            bool match = true;
+                            for (size_t k = 0; k < nLen; k++) {
+                                if (tolower(buf[j+k]) != tolower(needle[k])) { match = false; break; }
+                            }
+                            if (match) {
+                                Log("[STRING] Found '%s' at 0x%p", needle, (void*)((BYTE*)mbi.BaseAddress + j));
+                                found++; j += nLen;
+                            }
+                        }
+                    }
+                }
+                POOL_FREE(buf);
+            }
+        }
+        addr = (BYTE*)mbi.BaseAddress + mbi.RegionSize;
+    }
+    return found;
+}
+
+// ============================================
+// v14.0 - DLL LOAD MONITOR
+// ============================================
+static std::vector<std::string> g_KnownDLLs;
+static CRITICAL_SECTION g_csDLLMon;
+static bool g_bDLLMonInit = false;
+
+const char* g_SusDLLNames[] = {"hook", "inject", "cheat", "hack", "aimbot", "trainer", "minhook", NULL};
+
+void InitDLLMonitor() {
+    if (g_bDLLMonInit || !DLL_MONITOR_ENABLED) return;
+    InitializeCriticalSection(&g_csDLLMon);
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        MODULEENTRY32 me; me.dwSize = sizeof(me);
+        if (Module32First(hSnap, &me)) {
+            do { g_KnownDLLs.push_back(me.szModule); } while (Module32Next(hSnap, &me));
+        }
+        CloseHandle(hSnap);
+    }
+    g_bDLLMonInit = true;
+    Log("[DLLMON] Init with %d DLLs", (int)g_KnownDLLs.size());
+}
+
+int CheckNewDLLs() {
+    if (!DLL_MONITOR_ENABLED || !g_bDLLMonInit) return 0;
+    int suspicious = 0;
+    EnterCriticalSection(&g_csDLLMon);
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        MODULEENTRY32 me; me.dwSize = sizeof(me);
+        if (Module32First(hSnap, &me)) {
+            do {
+                bool known = false;
+                for (auto& k : g_KnownDLLs) if (_stricmp(k.c_str(), me.szModule) == 0) { known = true; break; }
+                if (!known) {
+                    g_KnownDLLs.push_back(me.szModule);
+                    char lower[256]; strcpy(lower, me.szModule);
+                    for (char* p = lower; *p; p++) *p = tolower(*p);
+                    for (int i = 0; g_SusDLLNames[i]; i++) {
+                        if (strstr(lower, g_SusDLLNames[i])) {
+                            Log("[DLLMON] !!! SUSPICIOUS: %s", me.szModule);
+                            suspicious++;
+                            break;
+                        }
+                    }
+                }
+            } while (Module32Next(hSnap, &me));
+        }
+        CloseHandle(hSnap);
+    }
+    LeaveCriticalSection(&g_csDLLMon);
+    return suspicious;
+}
+
+// ============================================
+// v14.0 - CODE SECTION HASH
+// ============================================
+static DWORD g_dwCodeSectionHash = 0;
+static bool g_bCodeHashInit = false;
+
+DWORD CalcSectionHash(BYTE* data, DWORD size) {
+    DWORD hash = 0x811C9DC5;
+    for (DWORD i = 0; i < size; i++) { hash ^= data[i]; hash *= 0x01000193; }
+    return hash;
+}
+
+void InitCodeHash() {
+    if (g_bCodeHashInit || !CODE_HASH_ENABLED) return;
+    HMODULE hMod = GetModuleHandleA(NULL);
+    if (!hMod) return;
+    PIMAGE_DOS_HEADER pDOS = (PIMAGE_DOS_HEADER)hMod;
+    if (pDOS->e_magic != IMAGE_DOS_SIGNATURE) return;
+    PIMAGE_NT_HEADERS pNT = (PIMAGE_NT_HEADERS)((BYTE*)hMod + pDOS->e_lfanew);
+    PIMAGE_SECTION_HEADER pSec = IMAGE_FIRST_SECTION(pNT);
+    for (WORD i = 0; i < pNT->FileHeader.NumberOfSections; i++) {
+        if (strcmp((char*)pSec[i].Name, ".text") == 0) {
+            g_dwCodeSectionHash = CalcSectionHash((BYTE*)hMod + pSec[i].VirtualAddress, pSec[i].Misc.VirtualSize);
+            Log("[CODEHASH] .text hash: 0x%08X", g_dwCodeSectionHash);
+            break;
+        }
+    }
+    g_bCodeHashInit = true;
+}
+
+int VerifyCodeSection() {
+    if (!CODE_HASH_ENABLED || !g_bCodeHashInit) return 0;
+    HMODULE hMod = GetModuleHandleA(NULL);
+    PIMAGE_DOS_HEADER pDOS = (PIMAGE_DOS_HEADER)hMod;
+    PIMAGE_NT_HEADERS pNT = (PIMAGE_NT_HEADERS)((BYTE*)hMod + pDOS->e_lfanew);
+    PIMAGE_SECTION_HEADER pSec = IMAGE_FIRST_SECTION(pNT);
+    for (WORD i = 0; i < pNT->FileHeader.NumberOfSections; i++) {
+        if (strcmp((char*)pSec[i].Name, ".text") == 0) {
+            DWORD cur = CalcSectionHash((BYTE*)hMod + pSec[i].VirtualAddress, pSec[i].Misc.VirtualSize);
+            if (cur != g_dwCodeSectionHash) {
+                Log("[CODEHASH] !!! MODIFIED: was 0x%08X now 0x%08X", g_dwCodeSectionHash, cur);
+                return 1;
+            }
+            break;
+        }
+    }
+    return 0;
+}
+
+// ============================================
+// v14.0 - STACK TRACE VALIDATION
+// ============================================
+bool ValidateStackTrace() {
+    if (!STACK_TRACE_ENABLED) return true;
+    void* stack[32];
+    WORD frames = CaptureStackBackTrace(0, 32, stack, NULL);
+    HMODULE hMain = GetModuleHandleA(NULL);
+    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
+    HMODULE hNt = GetModuleHandleA("ntdll.dll");
+    
+    for (WORD i = 0; i < frames; i++) {
+        HMODULE hMod;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCSTR)stack[i], &hMod)) {
+            if (hMod != hMain && hMod != hK32 && hMod != hNt) {
+                char path[MAX_PATH]; GetModuleFileNameA(hMod, path, MAX_PATH);
+                char* fn = strrchr(path, '\\'); if (fn) fn++; else fn = path;
+                if (_stricmp(fn, "user32.dll") && _stricmp(fn, "gdi32.dll") && 
+                    _stricmp(fn, "msvcrt.dll") && _stricmp(fn, "winmm.dll")) {
+                    Log("[STACK] Unknown in callstack: %s", fn);
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// ============================================
+// v14.0 - NtQuery HOOK DETECTION
+// ============================================
+bool CheckNtQueryHooks() {
+    if (!NTQUERY_HOOK_ENABLED) return false;
+    HMODULE hNt = GetModuleHandleA("ntdll.dll");
+    if (!hNt) return false;
+    const char* funcs[] = {"NtQueryInformationProcess", "NtQuerySystemInformation", "NtQueryVirtualMemory", NULL};
+    for (int i = 0; funcs[i]; i++) {
+        BYTE* p = (BYTE*)GetProcAddress(hNt, funcs[i]);
+        if (p && (p[0] == 0xE9 || (p[0] == 0xFF && p[1] == 0x25) || (p[0] == 0x68 && p[5] == 0xC3))) {
+            Log("[NTQUERY] Hook on %s", funcs[i]);
+            return true;
+        }
+    }
+    return false;
+}
+
+// ============================================
+// v14.0 - PEB MANIPULATION CHECK
+// ============================================
+bool CheckPEBManipulation() {
+    if (!PEB_CHECK_ENABLED) return false;
+#ifdef _WIN64
+    BYTE* pPeb = (BYTE*)__readgsqword(0x60);
+    DWORD ntFlag = *(DWORD*)(pPeb + 0xBC);
+#else
+    BYTE* pPeb = (BYTE*)__readfsdword(0x30);
+    DWORD ntFlag = *(DWORD*)(pPeb + 0x68);
+#endif
+    if (pPeb[2]) { Log("[PEB] BeingDebugged set!"); return true; }
+    if (ntFlag & 0x70) { Log("[PEB] NtGlobalFlag: 0x%X", ntFlag); return true; }
+    return false;
+}
+
+// ============================================
+// v14.0 - ANTI-BLANK SCREENSHOT
+// ============================================
+static int g_iBlankSSCount = 0;
+
+bool IsScreenshotBlank(const BYTE* data, int w, int h, int stride) {
+    if (!ANTI_BLANK_ENABLED || !data) return false;
+    int diff = 0;
+    DWORD first = *(DWORD*)data & 0xFFFFFF;
+    for (int i = 0; i < 50; i++) {
+        int x = rand() % w, y = rand() % h;
+        DWORD c = *(DWORD*)(data + y*stride + x*4) & 0xFFFFFF;
+        if (c != first) diff++;
+    }
+    if (diff < 3) { Log("[ANTIBLANK] Screenshot blank!"); g_iBlankSSCount++; return true; }
+    return false;
+}
+
+// ============================================
+// v14.0 - CONFIG HOT-RELOAD
+// ============================================
+static DWORD g_dwConfigFileTime = 0;
+static char g_szConfigPath[MAX_PATH] = {0};
+
+struct RuntimeConfig {
+    bool scan_enabled = true;
+    int scan_interval = 120000;
+    bool scan_windows = true;
+    bool scan_strings = true;
+    bool scan_dlls = true;
+};
+static RuntimeConfig g_RTConfig;
+
+void LoadConfig(const char* path) {
+    FILE* f = fopen(path, "r");
+    if (!f) return;
+    char line[256];
+    while (fgets(line, 255, f)) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        char k[64], v[128];
+        if (sscanf(line, "%63[^=]=%127s", k, v) == 2) {
+            if (!strcmp(k, "scan_enabled")) g_RTConfig.scan_enabled = (v[0] == '1' || v[0] == 't');
+            else if (!strcmp(k, "scan_interval")) g_RTConfig.scan_interval = atoi(v);
+            else if (!strcmp(k, "scan_windows")) g_RTConfig.scan_windows = (v[0] == '1' || v[0] == 't');
+            else if (!strcmp(k, "scan_strings")) g_RTConfig.scan_strings = (v[0] == '1' || v[0] == 't');
+            else if (!strcmp(k, "scan_dlls")) g_RTConfig.scan_dlls = (v[0] == '1' || v[0] == 't');
+        }
+    }
+    fclose(f);
+    Log("[CONFIG] Loaded from %s", path);
+}
+
+void CheckConfigReload() {
+    if (!HOT_RELOAD_ENABLED || !g_szConfigPath[0]) return;
+    WIN32_FILE_ATTRIBUTE_DATA fi;
+    if (GetFileAttributesExA(g_szConfigPath, GetFileExInfoStandard, &fi)) {
+        if (fi.ftLastWriteTime.dwLowDateTime != g_dwConfigFileTime) {
+            g_dwConfigFileTime = fi.ftLastWriteTime.dwLowDateTime;
+            LoadConfig(g_szConfigPath);
+        }
+    }
+}
+
+void InitConfigReload(const char* gameDir) {
+    snprintf(g_szConfigPath, MAX_PATH, "%s\\agtr_config.ini", gameDir);
+    LoadConfig(g_szConfigPath);
+    WIN32_FILE_ATTRIBUTE_DATA fi;
+    if (GetFileAttributesExA(g_szConfigPath, GetFileExInfoStandard, &fi))
+        g_dwConfigFileTime = fi.ftLastWriteTime.dwLowDateTime;
 }
 
 // ============================================
@@ -2398,7 +2866,13 @@ void SendToAPI(const std::string& json, const std::string& sig) {
 // MAIN SCAN
 // ============================================
 void DoScan() {
-    Log("=== Starting Scan ===");
+    Log("=== Starting Scan v14.0 ===");
+    
+    // v14.0 - Smart throttling
+    if (ShouldSkipHeavyScan()) {
+        Log("[SCAN] Skipping heavy scans - low FPS");
+        return;
+    }
     
     g_iSusCount = 0;
     
@@ -2408,6 +2882,42 @@ void DoScan() {
     if (g_Settings.scan_windows) g_iSusCount += ScanWindows();
     if (g_Settings.scan_registry) g_iSusCount += ScanRegistry();
     if (g_Settings.scan_files) g_iSusCount += CheckSusFiles();
+    
+    // v14.0 - Enhanced window scan with overlay detection
+    if (WINDOW_ENUM_ENABLED && g_RTConfig.scan_windows) {
+        g_iSusCount += ScanWindows_v14();
+    }
+    
+    // v14.0 - String scanner
+    if (STRING_SCANNER_ENABLED && g_RTConfig.scan_strings) {
+        g_iSusCount += ScanMemoryStrings();
+    }
+    
+    // v14.0 - DLL load monitor
+    if (DLL_MONITOR_ENABLED && g_RTConfig.scan_dlls) {
+        g_iSusCount += CheckNewDLLs();
+    }
+    
+    // v14.0 - Code section hash verification
+    if (CODE_HASH_ENABLED) {
+        g_iSusCount += VerifyCodeSection();
+    }
+    
+    // v14.0 - Stack trace validation
+    if (STACK_TRACE_ENABLED && !ValidateStackTrace()) {
+        Log("[STACK] Invalid stack trace!");
+        g_iSusCount++;
+    }
+    
+    // v14.0 - NtQuery hook detection
+    if (NTQUERY_HOOK_ENABLED && CheckNtQueryHooks()) {
+        g_iSusCount++;
+    }
+    
+    // v14.0 - PEB manipulation check
+    if (PEB_CHECK_ENABLED && CheckPEBManipulation()) {
+        g_iSusCount++;
+    }
     
     // Security checks
     g_bDebuggerDetected = CheckDebugger();
@@ -2455,9 +2965,9 @@ void DoScan() {
     
     std::string json = BuildJson();
     
-    Log("Scan: %s | Sus:%d | Proc:%d | Mod:%d", 
+    Log("Scan: %s | Sus:%d | Proc:%d | Mod:%d | FPS:%d", 
         g_bPassed ? "CLEAN" : "SUS", g_iSusCount, 
-        (int)g_Processes.size(), (int)g_Modules.size());
+        (int)g_Processes.size(), (int)g_Modules.size(), g_iCurrentFPS);
     
     SendToAPI(json, "");
 }
@@ -2470,6 +2980,13 @@ DWORD WINAPI ScanThread(LPVOID) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     
     Sleep(3000);  // Wait for game to initialize
+    
+    // v14.0 - Initialize new systems
+    if (MEMORY_POOL_ENABLED) g_MemPool.Init();
+    if (ASYNC_SCAN_ENABLED) InitAsyncScan();
+    if (DLL_MONITOR_ENABLED) InitDLLMonitor();
+    if (CODE_HASH_ENABLED) InitCodeHash();
+    if (HOT_RELOAD_ENABLED) InitConfigReload(g_szGameDir);
     
     // Initialize security (heavy operations)
     InitSecurity();
@@ -2500,11 +3017,25 @@ DWORD WINAPI ScanThread(LPVOID) {
     DWORD lastHeartbeat = GetTickCount();
     DWORD lastSMAUpdate = GetTickCount();
     DWORD lastCommandCheck = GetTickCount();
+    DWORD lastConfigCheck = GetTickCount();
+    DWORD lastDLLCheck = GetTickCount();
     
     while (g_bRunning) {
         Sleep(1000);  // 1 second tick
         
         DWORD now = GetTickCount();
+        
+        // v14.0 - Config hot-reload
+        if (HOT_RELOAD_ENABLED && now - lastConfigCheck >= CONFIG_CHECK_INTERVAL) {
+            CheckConfigReload();
+            lastConfigCheck = now;
+        }
+        
+        // v14.0 - DLL monitor (frequent check)
+        if (DLL_MONITOR_ENABLED && now - lastDLLCheck >= 5000) {
+            CheckNewDLLs();
+            lastDLLCheck = now;
+        }
         
         // Detect server
         DetectConnectedServer();
@@ -2598,6 +3129,11 @@ void Shutdown() {
         CloseHandle(g_hThread); 
     }
     
+    // v14.0 - Cleanup
+    if (MEMORY_POOL_ENABLED) g_MemPool.Cleanup();
+    if (ASYNC_SCAN_ENABLED && g_bAsyncInitialized) DeleteCriticalSection(&g_csScanQueue);
+    if (DLL_MONITOR_ENABLED && g_bDLLMonInit) DeleteCriticalSection(&g_csDLLMon);
+    
     CloseSMASharedMemory();
     ShutdownGdiplus();
     
@@ -2686,6 +3222,7 @@ extern "C" {
 
 __declspec(dllexport) DWORD WINAPI timeGetTime(void) {
     if (!LoadOriginal() || !o_TimeGetTime) return 0;
+    UpdateFPSCounter();  // v14.0 - Smart throttling
     return o_TimeGetTime();
 }
 
