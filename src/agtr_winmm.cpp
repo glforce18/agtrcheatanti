@@ -1,6 +1,10 @@
 /*
- * AGTR Anti-Cheat v14.1 - Server Detection Fix
+ * AGTR Anti-Cheat v14.1.1 - Build Fix
  * ==================================================
+ *
+ * v14.1.1 Changes:
+ * - Fixed compilation error (extern "C" linkage conflict)
+ * - Fixed proxy function declarations for modern Windows SDK
  *
  * v14.1 Changes:
  * - Expanded server port detection range (27000-27200)
@@ -71,7 +75,7 @@
 // ============================================
 // VERSION & CONFIG
 // ============================================
-#define AGTR_VERSION "14.1"
+#define AGTR_VERSION "14.1.1"
 #define AGTR_HASH_LENGTH 8  // ReChecker uyumlu 8 karakter MD5
 
 // v14.0 Feature Flags
@@ -3539,9 +3543,11 @@ __declspec(dllexport) UINT WINAPI waveOutGetNumDevs(void) {
     return ((fn_VOID_UINT)o_waveOutGetNumDevs)();
 }
 
+} // extern "C" - Close before FORWARD_CALL to avoid linkage conflicts
+
 // All remaining functions use generic forwarding via GetProcAddress
 #define FORWARD_CALL(name) \
-    __declspec(dllexport) LRESULT WINAPI name(void* a, void* b, void* c, void* d, void* e, void* f) { \
+    extern "C" __declspec(dllexport) LRESULT WINAPI name(void* a, void* b, void* c, void* d, void* e, void* f) { \
         LoadOriginal(); \
         if (!o_##name) return 0; \
         typedef LRESULT (WINAPI *fn_t)(void*,void*,void*,void*,void*,void*); \
@@ -3660,8 +3666,6 @@ FORWARD_CALL(mmioAscend)
 FORWARD_CALL(mmioCreateChunk)
 FORWARD_CALL(mmioRenameA)
 FORWARD_CALL(mmioSendMessage)
-
-} // extern "C"
 
 // ============================================
 // DLL MAIN
