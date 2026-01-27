@@ -1,10 +1,17 @@
 /*
- * AGTR Anti-Cheat v14.1.1 - Build Fix
+ * AGTR Anti-Cheat v14.3 - Anti-Bypass Protection
  * ==================================================
  *
- * v14.1.1 Changes:
+ * v14.3 Changes (BYPASS PROTECTION):
+ * - Dynamic blacklist fetching from server (can't reverse engineer)
+ * - Hybrid detection: dynamic + static fallback
+ * - Server-side blacklist updates without DLL recompile
+ * - Process/DLL/Window detection uses dynamic lists
+ * - Foundation for hash-based detection (v15.0)
+ *
+ * v14.1.2 Changes:
  * - Fixed compilation error (extern "C" linkage conflict)
- * - Fixed proxy function declarations for modern Windows SDK
+ * - Removed conflicting FORWARD_CALL functions
  *
  * v14.1 Changes:
  * - Expanded server port detection range (27000-27200)
@@ -24,7 +31,7 @@
  * - Smart Throttling (FPS-aware)
  * - Memory Pool
  * - Config Hot-Reload
- * 
+ *
  * BUILD (x86 Developer Command Prompt):
  * cl /O2 /MT /LD /EHsc agtr_winmm.cpp /link /DEF:winmm.def /OUT:winmm.dll ^
  *    winmm.lib winhttp.lib ws2_32.lib iphlpapi.lib psapi.lib advapi32.lib ^
@@ -75,7 +82,7 @@
 // ============================================
 // VERSION & CONFIG
 // ============================================
-#define AGTR_VERSION "14.1.1"
+#define AGTR_VERSION "14.3"
 #define AGTR_HASH_LENGTH 8  // ReChecker uyumlu 8 karakter MD5
 
 // v14.0 Feature Flags
@@ -91,6 +98,12 @@
 #define SMART_THROTTLE_ENABLED true
 #define MEMORY_POOL_ENABLED true
 #define HOT_RELOAD_ENABLED true
+
+// v14.3 Feature Flags (Anti-Bypass)
+#define DYNAMIC_BLACKLIST_ENABLED true
+#define HASH_DETECTION_ENABLED true
+#define BEHAVIOR_MONITORING_ENABLED true
+#define BLACKLIST_UPDATE_INTERVAL 3600000  // 1 hour
 
 // v14.0 Config
 #define SCAN_QUEUE_MAX 32
@@ -227,6 +240,45 @@ static bool g_bStringsDecrypted = false;
 static char g_szSelfHash[65] = {0};
 static char g_szSelfName[64] = {0};
 static char g_szSignatureKey[64] = {0};
+
+// ============================================
+// v14.3 - DYNAMIC BLACKLIST GLOBALS
+// ============================================
+static std::set<std::string> g_DynamicProcBlacklist;
+static std::set<std::string> g_DynamicDLLBlacklist;
+static std::set<std::string> g_DynamicWindowBlacklist;
+static std::set<std::string> g_DynamicStringBlacklist;
+static std::map<std::string, std::string> g_HashBlacklist;  // hash -> name
+static DWORD g_dwLastBlacklistUpdate = 0;
+static bool g_bBlacklistInitialized = false;
+static CRITICAL_SECTION g_csBlacklist;
+
+// v14.3 - Behavior monitoring
+struct BehaviorCounter {
+    int suspiciousAPICalls;
+    DWORD lastReset;
+
+    BehaviorCounter() : suspiciousAPICalls(0), lastReset(GetTickCount()) {}
+
+    void Increment() {
+        suspiciousAPICalls++;
+    }
+
+    void Reset() {
+        suspiciousAPICalls = 0;
+        lastReset = GetTickCount();
+    }
+
+    int GetScore() {
+        return suspiciousAPICalls * 5;
+    }
+
+    bool ShouldReset() {
+        return (GetTickCount() - lastReset) > 300000;  // 5 minutes
+    }
+};
+
+static BehaviorCounter g_BehaviorCounter;
 
 static void EnsureStringsDecrypted() {
     if (g_bStringsDecrypted) return;
@@ -2564,6 +2616,219 @@ bool FetchSettings() {
     return true;
 }
 
+// ============================================
+// v14.3 - DYNAMIC BLACKLIST SYSTEM
+// ============================================
+
+// Simple JSON helper: Extract array items
+static bool ExtractJSONArray(const char* json, const char* key, std::set<std::string>& output) {
+    char searchKey[128];
+    sprintf(searchKey, "\"%s\":[", key);
+
+    const char* arrayStart = strstr(json, searchKey);
+    if (!arrayStart) return false;
+
+    arrayStart += strlen(searchKey);
+    const char* arrayEnd = strchr(arrayStart, ']');
+    if (!arrayEnd) return false;
+
+    // Parse items: {"name":"value","severity":"..."}
+    const char* pos = arrayStart;
+    while (pos < arrayEnd) {
+        const char* nameStart = strstr(pos, "\"name\":\"");
+        if (!nameStart || nameStart >= arrayEnd) break;
+
+        nameStart += 8;  // Skip "name":"
+        const char* nameEnd = strchr(nameStart, '"');
+        if (!nameEnd || nameEnd >= arrayEnd) break;
+
+        std::string name(nameStart, nameEnd - nameStart);
+        if (!name.empty()) {
+            // Convert to lowercase
+            for (size_t i = 0; i < name.length(); i++) {
+                name[i] = tolower(name[i]);
+            }
+            output.insert(name);
+        }
+
+        pos = nameEnd + 1;
+    }
+
+    return !output.empty();
+}
+
+// Fetch dynamic blacklists from server
+bool FetchDynamicBlacklists() {
+    if (!DYNAMIC_BLACKLIST_ENABLED) return false;
+
+    EnsureStringsDecrypted();
+
+    // Check if we should update
+    DWORD now = GetTickCount();
+    if (g_bBlacklistInitialized && (now - g_dwLastBlacklistUpdate) < BLACKLIST_UPDATE_INTERVAL) {
+        return true;  // Cache still valid
+    }
+
+    Log("[v14.3] Fetching dynamic blacklists...");
+
+    // Build URL: /api/v1/blacklist/all
+    wchar_t url[256];
+    wcscpy(url, g_szAPIHost);
+    wcscat(url, L"/api/v1/blacklist/all");
+
+    // HTTP GET request
+    std::string resp = HttpRequest(url, "", "GET", false);
+
+    if (resp.empty() || resp.find("\"version\"") == std::string::npos) {
+        Log("[v14.3] Failed to fetch blacklists, using static fallback");
+        return false;
+    }
+
+    EnterCriticalSection(&g_csBlacklist);
+
+    // Clear old data
+    g_DynamicProcBlacklist.clear();
+    g_DynamicDLLBlacklist.clear();
+    g_DynamicWindowBlacklist.clear();
+    g_DynamicStringBlacklist.clear();
+
+    // Parse JSON arrays
+    ExtractJSONArray(resp.c_str(), "processes", g_DynamicProcBlacklist);
+    ExtractJSONArray(resp.c_str(), "dlls", g_DynamicDLLBlacklist);
+    ExtractJSONArray(resp.c_str(), "windows", g_DynamicWindowBlacklist);
+    ExtractJSONArray(resp.c_str(), "strings", g_DynamicStringBlacklist);
+
+    // Parse hashes (if any)
+    // Format: "hashes":[{"hash":"ABC123","type":"md5"}]
+    const char* hashArray = strstr(resp.c_str(), "\"hashes\":[");
+    if (hashArray) {
+        const char* hashEnd = strchr(hashArray, ']');
+        if (hashEnd) {
+            const char* pos = hashArray;
+            while (pos < hashEnd) {
+                const char* hashStart = strstr(pos, "\"hash\":\"");
+                if (!hashStart || hashStart >= hashEnd) break;
+
+                hashStart += 8;
+                const char* hashEnd2 = strchr(hashStart, '"');
+                if (!hashEnd2 || hashEnd2 >= hashEnd) break;
+
+                std::string hash(hashStart, hashEnd2 - hashStart);
+                if (hash.length() >= 8) {
+                    // Convert to lowercase
+                    for (size_t i = 0; i < hash.length(); i++) {
+                        hash[i] = tolower(hash[i]);
+                    }
+                    g_HashBlacklist[hash] = "known_cheat";
+                }
+
+                pos = hashEnd2 + 1;
+            }
+        }
+    }
+
+    g_bBlacklistInitialized = true;
+    g_dwLastBlacklistUpdate = now;
+
+    LeaveCriticalSection(&g_csBlacklist);
+
+    Log("[v14.3] Dynamic blacklist loaded: %d procs, %d dlls, %d windows, %d hashes",
+        (int)g_DynamicProcBlacklist.size(),
+        (int)g_DynamicDLLBlacklist.size(),
+        (int)g_DynamicWindowBlacklist.size(),
+        (int)g_HashBlacklist.size());
+
+    return true;
+}
+
+// v14.3: Check if process is blacklisted (dynamic + static fallback)
+static bool IsProcessBlacklisted_v14_3(const char* processName) {
+    std::string lowerName = processName;
+    for (size_t i = 0; i < lowerName.length(); i++) {
+        lowerName[i] = tolower(lowerName[i]);
+    }
+
+    // Try dynamic blacklist first
+    if (g_bBlacklistInitialized && DYNAMIC_BLACKLIST_ENABLED) {
+        EnterCriticalSection(&g_csBlacklist);
+        bool found = g_DynamicProcBlacklist.count(lowerName) > 0;
+        LeaveCriticalSection(&g_csBlacklist);
+
+        if (found) {
+            Log("[v14.3] DYNAMIC DETECTION: %s", processName);
+            return true;
+        }
+    }
+
+    // Fallback to static blacklist
+    for (int i = 0; g_SusProc[i]; i++) {
+        if (strstr(lowerName.c_str(), g_SusProc[i])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// v14.3: Check if DLL is blacklisted (dynamic + static fallback)
+static bool IsDLLBlacklisted_v14_3(const char* dllName) {
+    std::string lowerName = dllName;
+    for (size_t i = 0; i < lowerName.length(); i++) {
+        lowerName[i] = tolower(lowerName[i]);
+    }
+
+    // Try dynamic blacklist first
+    if (g_bBlacklistInitialized && DYNAMIC_BLACKLIST_ENABLED) {
+        EnterCriticalSection(&g_csBlacklist);
+        bool found = g_DynamicDLLBlacklist.count(lowerName) > 0;
+        LeaveCriticalSection(&g_csBlacklist);
+
+        if (found) {
+            Log("[v14.3] DYNAMIC DLL DETECTION: %s", dllName);
+            return true;
+        }
+    }
+
+    // Fallback to static blacklist
+    for (int i = 0; g_SusDLLs[i]; i++) {
+        if (strstr(lowerName.c_str(), g_SusDLLs[i])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// v14.3: Check if window is blacklisted (dynamic + static fallback)
+static bool IsWindowBlacklisted_v14_3(const char* windowTitle) {
+    std::string lowerTitle = windowTitle;
+    for (size_t i = 0; i < lowerTitle.length(); i++) {
+        lowerTitle[i] = tolower(lowerTitle[i]);
+    }
+
+    // Try dynamic blacklist first
+    if (g_bBlacklistInitialized && DYNAMIC_BLACKLIST_ENABLED) {
+        EnterCriticalSection(&g_csBlacklist);
+        for (const auto& pattern : g_DynamicWindowBlacklist) {
+            if (lowerTitle.find(pattern) != std::string::npos) {
+                LeaveCriticalSection(&g_csBlacklist);
+                Log("[v14.3] DYNAMIC WINDOW DETECTION: %s", windowTitle);
+                return true;
+            }
+        }
+        LeaveCriticalSection(&g_csBlacklist);
+    }
+
+    // Fallback to static blacklist
+    for (int i = 0; g_SusWin[i]; i++) {
+        if (strstr(lowerTitle.c_str(), g_SusWin[i])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 
 // ============================================
 // SCAN FUNCTIONS
@@ -2597,13 +2862,11 @@ int ScanProcesses() {
             }
             
             if (!whitelisted) {
-                for (int i = 0; g_SusProc[i]; i++) {
-                    if (strstr(lowerName, g_SusProc[i])) {
-                        pi.suspicious = true;
-                        suspicious++;
-                        Log("[PROC] Suspicious: %s (PID %d)", pe.szExeFile, pe.th32ProcessID);
-                        break;
-                    }
+                // v14.3: Use dynamic + static blacklist
+                if (IsProcessBlacklisted_v14_3(pe.szExeFile)) {
+                    pi.suspicious = true;
+                    suspicious++;
+                    Log("[PROC] Suspicious: %s (PID %d)", pe.szExeFile, pe.th32ProcessID);
                 }
             }
             
@@ -2640,13 +2903,10 @@ int ScanModules() {
             GetFileHash(me.szExePath, shortHash, fullHash, &size);
             mi.hash = shortHash;  // 8 karakter
             
-            // Check for suspicious DLLs
-            for (int i = 0; g_SusDLLs[i]; i++) {
-                if (strstr(lowerName, g_SusDLLs[i])) {
-                    suspicious++;
-                    Log("[MOD] Suspicious: %s", me.szModule);
-                    break;
-                }
+            // v14.3: Check for suspicious DLLs (dynamic + static)
+            if (IsDLLBlacklisted_v14_3(me.szModule)) {
+                suspicious++;
+                Log("[MOD] Suspicious: %s", me.szModule);
             }
             
             g_Modules.push_back(mi);
@@ -2683,13 +2943,11 @@ int ScanWindows() {
         GetWindowThreadProcessId(hwnd, &wi.pid);
         wi.suspicious = false;
         
-        for (int i = 0; g_SusWin[i]; i++) {
-            if (strstr(lowerTitle, g_SusWin[i])) {
-                wi.suspicious = true;
-                (*pData->sus)++;
-                Log("[WIN] Suspicious: %s", title);
-                break;
-            }
+        // v14.3: Check window title (dynamic + static)
+        if (IsWindowBlacklisted_v14_3(title)) {
+            wi.suspicious = true;
+            (*pData->sus)++;
+            Log("[WIN] Suspicious: %s", title);
         }
         
         pData->windows->push_back(wi);
@@ -3003,15 +3261,21 @@ DWORD WINAPI ScanThread(LPVOID) {
     if (DLL_MONITOR_ENABLED) InitDLLMonitor();
     if (CODE_HASH_ENABLED) InitCodeHash();
     if (HOT_RELOAD_ENABLED) InitConfigReload(g_szGameDir);
-    
+
     // Initialize security (heavy operations)
     InitSecurity();
-    
+
     // Initialize SMA communication
     InitSMASharedMemory();
-    
+
     // Initialize AES encryption
     InitAESEncryption();
+
+    // v14.3 - Initialize dynamic blacklist system
+    if (DYNAMIC_BLACKLIST_ENABLED) {
+        InitializeCriticalSection(&g_csBlacklist);
+        Log("[v14.3] Initializing dynamic blacklist system...");
+    }
     
     // Generate IDs
     GenHWID();
@@ -3019,7 +3283,14 @@ DWORD WINAPI ScanThread(LPVOID) {
     
     // Fetch settings
     FetchSettings();
-    
+
+    // v14.3 - Fetch dynamic blacklists from server
+    if (DYNAMIC_BLACKLIST_ENABLED) {
+        if (!FetchDynamicBlacklists()) {
+            Log("[v14.3] Using static fallback blacklists");
+        }
+    }
+
     // Initial scan
     DoScan();
     
@@ -3149,7 +3420,10 @@ void Shutdown() {
     if (MEMORY_POOL_ENABLED) g_MemPool.Cleanup();
     if (ASYNC_SCAN_ENABLED && g_bAsyncInitialized) DeleteCriticalSection(&g_csScanQueue);
     if (DLL_MONITOR_ENABLED && g_bDLLMonInit) DeleteCriticalSection(&g_csDLLMon);
-    
+
+    // v14.3 - Cleanup
+    if (DYNAMIC_BLACKLIST_ENABLED && g_bBlacklistInitialized) DeleteCriticalSection(&g_csBlacklist);
+
     CloseSMASharedMemory();
     ShutdownGdiplus();
     
