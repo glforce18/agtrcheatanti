@@ -62,6 +62,7 @@
 #include <ctype.h>
 #include <string>
 #include <vector>
+#include <set>
 #include <map>
 #include <queue>
 
@@ -1904,6 +1905,15 @@ void Log(const char* fmt, ...) {
 
 void ToLower(char* s) { for (; *s; s++) *s = tolower(*s); }
 
+// v14.3 - String helper
+static std::string ToLowerStr(const char* str) {
+    std::string result = str;
+    for (size_t i = 0; i < result.length(); i++) {
+        result[i] = (char)tolower((unsigned char)result[i]);
+    }
+    return result;
+}
+
 // ============================================
 // MD5 HASH (ReChecker uyumlu 8 karakter)
 // ============================================
@@ -2717,7 +2727,7 @@ bool FetchDynamicBlacklists() {
                 if (hash.length() >= 8) {
                     // Convert to lowercase
                     for (size_t i = 0; i < hash.length(); i++) {
-                        hash[i] = tolower(hash[i]);
+                        hash[i] = (char)tolower((unsigned char)hash[i]);
                     }
                     g_HashBlacklist[hash] = "known_cheat";
                 }
@@ -2743,15 +2753,12 @@ bool FetchDynamicBlacklists() {
 
 // v14.3: Check if process is blacklisted (dynamic + static fallback)
 static bool IsProcessBlacklisted_v14_3(const char* processName) {
-    std::string lowerName = processName;
-    for (size_t i = 0; i < lowerName.length(); i++) {
-        lowerName[i] = tolower(lowerName[i]);
-    }
+    std::string lowerName = ToLowerStr(processName);
 
     // Try dynamic blacklist first
     if (g_bBlacklistInitialized && DYNAMIC_BLACKLIST_ENABLED) {
         EnterCriticalSection(&g_csBlacklist);
-        bool found = g_DynamicProcBlacklist.count(lowerName) > 0;
+        bool found = (g_DynamicProcBlacklist.find(lowerName) != g_DynamicProcBlacklist.end());
         LeaveCriticalSection(&g_csBlacklist);
 
         if (found) {
@@ -2772,15 +2779,12 @@ static bool IsProcessBlacklisted_v14_3(const char* processName) {
 
 // v14.3: Check if DLL is blacklisted (dynamic + static fallback)
 static bool IsDLLBlacklisted_v14_3(const char* dllName) {
-    std::string lowerName = dllName;
-    for (size_t i = 0; i < lowerName.length(); i++) {
-        lowerName[i] = tolower(lowerName[i]);
-    }
+    std::string lowerName = ToLowerStr(dllName);
 
     // Try dynamic blacklist first
     if (g_bBlacklistInitialized && DYNAMIC_BLACKLIST_ENABLED) {
         EnterCriticalSection(&g_csBlacklist);
-        bool found = g_DynamicDLLBlacklist.count(lowerName) > 0;
+        bool found = (g_DynamicDLLBlacklist.find(lowerName) != g_DynamicDLLBlacklist.end());
         LeaveCriticalSection(&g_csBlacklist);
 
         if (found) {
@@ -2801,16 +2805,14 @@ static bool IsDLLBlacklisted_v14_3(const char* dllName) {
 
 // v14.3: Check if window is blacklisted (dynamic + static fallback)
 static bool IsWindowBlacklisted_v14_3(const char* windowTitle) {
-    std::string lowerTitle = windowTitle;
-    for (size_t i = 0; i < lowerTitle.length(); i++) {
-        lowerTitle[i] = tolower(lowerTitle[i]);
-    }
+    std::string lowerTitle = ToLowerStr(windowTitle);
 
     // Try dynamic blacklist first
     if (g_bBlacklistInitialized && DYNAMIC_BLACKLIST_ENABLED) {
         EnterCriticalSection(&g_csBlacklist);
-        for (const auto& pattern : g_DynamicWindowBlacklist) {
-            if (lowerTitle.find(pattern) != std::string::npos) {
+        std::set<std::string>::const_iterator it;
+        for (it = g_DynamicWindowBlacklist.begin(); it != g_DynamicWindowBlacklist.end(); ++it) {
+            if (lowerTitle.find(*it) != std::string::npos) {
                 LeaveCriticalSection(&g_csBlacklist);
                 Log("[v14.3] DYNAMIC WINDOW DETECTION: %s", windowTitle);
                 return true;
