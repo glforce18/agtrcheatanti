@@ -1,4 +1,4 @@
-# AGTR Anti-Cheat v12.1 - Multi-DLL Proxy System
+# AGTR Anti-Cheat v14.1 - Multi-DLL Proxy System
 
 ## Genel Bakış
 
@@ -6,6 +6,23 @@ Bu sistem 3 DLL proxy'den oluşur:
 - **winmm.dll** - Ana anti-cheat modülü (tam tarama)
 - **dinput8.dll** - Tetikleyici proxy (winmm'i yükler)
 - **dsound.dll** - Tetikleyici proxy (winmm'i yükler)
+
+## v14.1 Yenilikler (Server Detection Fix)
+
+### Server IP Detection İyileştirmesi
+- **Genişletilmiş Port Aralığı:** 27000-27200 (önceden 27000-27100)
+- **Daha İyi Server Tespiti:** Tüm port konfigürasyonları destekleniyor
+- **Admin Panel Fix:** Artık "unknown server" problemi yok
+- **Geriye Uyumlu:** Eski serverlar da destekleniyor
+
+### Değişiklikler
+```cpp
+// Önceki: 27000-27100
+if (remotePort >= 27000 && remotePort <= 27100)
+
+// Yeni: 27000-27200
+if (remotePort >= 27000 && remotePort <= 27200)
+```
 
 ## v12.1 Yenilikler (Security Edition)
 

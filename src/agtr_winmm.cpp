@@ -1,7 +1,12 @@
 /*
- * AGTR Anti-Cheat v14.0 - Ultimate Security Edition
+ * AGTR Anti-Cheat v14.1 - Server Detection Fix
  * ==================================================
- * 
+ *
+ * v14.1 Changes:
+ * - Expanded server port detection range (27000-27200)
+ * - Improved server IP detection for all port configurations
+ * - Fixed "unknown server" issue in admin panel
+ *
  * v14.0 New Features:
  * - Window Enumeration (overlay detection)
  * - String Scanner (memory string search)
@@ -66,7 +71,7 @@
 // ============================================
 // VERSION & CONFIG
 // ============================================
-#define AGTR_VERSION "14.0"
+#define AGTR_VERSION "14.1"
 #define AGTR_HASH_LENGTH 8  // ReChecker uyumlu 8 karakter MD5
 
 // v14.0 Feature Flags
@@ -2299,7 +2304,8 @@ bool DetectConnectedServer() {
                     remoteAddr.S_un.S_addr = row.dwRemoteAddr;
                     int remotePort = ntohs((u_short)row.dwRemotePort);
                     
-                    if (remotePort >= 27000 && remotePort <= 27100) {
+                    // v14.1: Expanded port range for server detection (27000-27200)
+                    if (remotePort >= 27000 && remotePort <= 27200) {
                         strcpy(g_szConnectedIP, inet_ntoa(remoteAddr));
                         g_iConnectedPort = remotePort;
                         g_bInServer = true;
@@ -2323,7 +2329,8 @@ bool DetectConnectedServer() {
                     MIB_UDPROW_OWNER_PID& row = pUdpTable->table[i];
                     if (row.dwOwningPid == hlPid) {
                         int localPort = ntohs((u_short)row.dwLocalPort);
-                        if (localPort >= 27000 && localPort <= 27100) {
+                        // v14.1: Expanded port range (27000-27200)
+                        if (localPort >= 27000 && localPort <= 27200) {
                             g_bInServer = true;
                             break;
                         }
