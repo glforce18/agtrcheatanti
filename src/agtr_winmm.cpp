@@ -3543,44 +3543,6 @@ __declspec(dllexport) UINT WINAPI waveOutGetNumDevs(void) {
     return ((fn_VOID_UINT)o_waveOutGetNumDevs)();
 }
 
-} // extern "C" - Close before FORWARD_CALL to avoid linkage conflicts
-
-// All remaining functions use generic forwarding via GetProcAddress
-#define FORWARD_CALL(name) \
-    extern "C" __declspec(dllexport) LRESULT WINAPI name(void* a, void* b, void* c, void* d, void* e, void* f) { \
-        LoadOriginal(); \
-        if (!o_##name) return 0; \
-        typedef LRESULT (WINAPI *fn_t)(void*,void*,void*,void*,void*,void*); \
-        return ((fn_t)o_##name)(a,b,c,d,e,f); \
-    }
-
-FORWARD_CALL(waveOutGetPosition)
-FORWARD_CALL(waveOutGetDevCapsA)
-FORWARD_CALL(waveOutGetDevCapsW)
-FORWARD_CALL(waveOutGetVolume)
-FORWARD_CALL(waveOutSetVolume)
-FORWARD_CALL(waveOutGetErrorTextA)
-FORWARD_CALL(waveOutGetErrorTextW)
-FORWARD_CALL(waveOutGetID)
-FORWARD_CALL(waveOutMessage)
-FORWARD_CALL(waveOutBreakLoop)
-FORWARD_CALL(waveInOpen)
-FORWARD_CALL(waveInClose)
-FORWARD_CALL(waveInGetNumDevs)
-FORWARD_CALL(waveInGetDevCapsA)
-FORWARD_CALL(waveInGetDevCapsW)
-FORWARD_CALL(waveInStart)
-FORWARD_CALL(waveInStop)
-FORWARD_CALL(waveInReset)
-FORWARD_CALL(waveInPrepareHeader)
-FORWARD_CALL(waveInUnprepareHeader)
-FORWARD_CALL(waveInAddBuffer)
-FORWARD_CALL(waveInGetPosition)
-FORWARD_CALL(waveInGetID)
-FORWARD_CALL(waveInGetErrorTextA)
-FORWARD_CALL(waveInGetErrorTextW)
-FORWARD_CALL(waveInMessage)
-
 __declspec(dllexport) BOOL WINAPI PlaySoundA(LPCSTR p, HMODULE h, DWORD d) {
     if (!LoadOriginal() || !o_PlaySoundA) return FALSE;
     return ((fn_PLAYSOUND_A)o_PlaySoundA)(p, h, d);
@@ -3591,81 +3553,8 @@ __declspec(dllexport) BOOL WINAPI PlaySoundW(LPCWSTR p, HMODULE h, DWORD d) {
     return ((fn_PLAYSOUND_W)o_PlaySoundW)(p, h, d);
 }
 
-FORWARD_CALL(sndPlaySoundA)
-FORWARD_CALL(sndPlaySoundW)
-FORWARD_CALL(joyGetNumDevs)
-FORWARD_CALL(joyGetDevCapsA)
-FORWARD_CALL(joyGetDevCapsW)
-FORWARD_CALL(joyGetPos)
-FORWARD_CALL(joyGetPosEx)
-FORWARD_CALL(joyGetThreshold)
-FORWARD_CALL(joySetThreshold)
-FORWARD_CALL(joySetCapture)
-FORWARD_CALL(joyReleaseCapture)
-FORWARD_CALL(midiOutGetNumDevs)
-FORWARD_CALL(midiOutGetDevCapsA)
-FORWARD_CALL(midiOutGetDevCapsW)
-FORWARD_CALL(midiOutOpen)
-FORWARD_CALL(midiOutClose)
-FORWARD_CALL(midiOutShortMsg)
-FORWARD_CALL(midiOutLongMsg)
-FORWARD_CALL(midiOutReset)
-FORWARD_CALL(midiOutPrepareHeader)
-FORWARD_CALL(midiOutUnprepareHeader)
-FORWARD_CALL(auxGetNumDevs)
-FORWARD_CALL(auxGetDevCapsA)
-FORWARD_CALL(auxGetDevCapsW)
-FORWARD_CALL(auxGetVolume)
-FORWARD_CALL(auxSetVolume)
-FORWARD_CALL(auxOutMessage)
-FORWARD_CALL(mixerGetNumDevs)
-FORWARD_CALL(mixerOpen)
-FORWARD_CALL(mixerClose)
-FORWARD_CALL(mixerGetDevCapsA)
-FORWARD_CALL(mixerGetDevCapsW)
-FORWARD_CALL(mixerGetLineInfoA)
-FORWARD_CALL(mixerGetLineInfoW)
-FORWARD_CALL(mixerGetLineControlsA)
-FORWARD_CALL(mixerGetLineControlsW)
-FORWARD_CALL(mixerGetControlDetailsA)
-FORWARD_CALL(mixerGetControlDetailsW)
-FORWARD_CALL(mixerSetControlDetails)
-FORWARD_CALL(mixerGetID)
-FORWARD_CALL(mixerMessage)
-FORWARD_CALL(mciSendCommandA)
-FORWARD_CALL(mciSendCommandW)
-FORWARD_CALL(mciSendStringA)
-FORWARD_CALL(mciSendStringW)
-FORWARD_CALL(mciGetErrorStringA)
-FORWARD_CALL(mciGetErrorStringW)
-FORWARD_CALL(mciGetDeviceIDA)
-FORWARD_CALL(mciGetDeviceIDW)
-FORWARD_CALL(mciGetDeviceIDFromElementIDA)
-FORWARD_CALL(mciGetDeviceIDFromElementIDW)
-FORWARD_CALL(mciSetYieldProc)
-FORWARD_CALL(mciGetYieldProc)
-FORWARD_CALL(mciGetCreatorTask)
-FORWARD_CALL(mciExecute)
-FORWARD_CALL(mmioOpenA)
-FORWARD_CALL(mmioOpenW)
-FORWARD_CALL(mmioClose)
-FORWARD_CALL(mmioRead)
-FORWARD_CALL(mmioWrite)
-FORWARD_CALL(mmioSeek)
-FORWARD_CALL(mmioGetInfo)
-FORWARD_CALL(mmioSetInfo)
-FORWARD_CALL(mmioSetBuffer)
-FORWARD_CALL(mmioFlush)
-FORWARD_CALL(mmioAdvance)
-FORWARD_CALL(mmioInstallIOProcA)
-FORWARD_CALL(mmioInstallIOProcW)
-FORWARD_CALL(mmioStringToFOURCCA)
-FORWARD_CALL(mmioStringToFOURCCW)
-FORWARD_CALL(mmioDescend)
-FORWARD_CALL(mmioAscend)
-FORWARD_CALL(mmioCreateChunk)
-FORWARD_CALL(mmioRenameA)
-FORWARD_CALL(mmioSendMessage)
+} // extern "C"
+
 
 // ============================================
 // DLL MAIN
